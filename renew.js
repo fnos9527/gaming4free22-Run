@@ -5,7 +5,7 @@ const CONSOLE_URL = process.env.CONSOLE_URL || 'https://control.gaming4free.net/
 const COOKIE_XSRF = process.env.COOKIE_XSRF;
 const COOKIE_SESSION = process.env.COOKIE_SESSION;
 
-// 提取纯净 Cookie 的安全清洗函数
+// 自动清洗 Cookie 数据的安全过滤函数
 function cleanCookieValue(rawInput, cookieName) {
     if (!rawInput) return '';
     let cleaned = rawInput.trim();
@@ -88,16 +88,24 @@ async function main() {
     try {
         const response = await connect({
             headless: false,
-            turnstile: true, // 启用自动 Turnstile 检测与绕过
+            turnstile: true, // 开启 Turnstile 自动绕过机制
             disableXvfb: false,
+            connectOption: {
+                defaultViewport: null // 禁用默认的 800x600 视口，跟随浏览器窗口大小
+            },
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--proxy-server=socks5://127.0.0.1:10808'
+                '--proxy-server=socks5://127.0.0.1:10808',
+                '--window-size=1280,800' // 强制浏览器启动时调整为 1280x800 大屏窗口
             ]
         });
         browser = response.browser;
         page = response.page;
+
+        // 双重保险：再次显式设置页面视口尺寸为电脑版
+        await page.setViewport({ width: 1280, height: 800 });
+
     } catch (error) {
         console.error("Failed to launch browser:", error);
         await sendTelegramNotification(`❌ Failed to start automation browser: ${error.message}`);
@@ -173,22 +181,21 @@ async function main() {
             } else {
                 console.log("Renewal button is missing for an unknown reason.");
             }
-            // 截图并保存以备查看
             await page.screenshot({ path: 'verification_result.png' });
             await browser.close();
             return;
         }
 
         console.log("Renewal button found. Scrolling into view and clicking to trigger Turnstile...");
-        // 滚动至页面中心，确保能被真实模拟鼠标点中
+        // 滚动至页面中心并轻微等待，确保能被真实模拟鼠标精准点中
         await page.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }), targetElement);
-        await sleep(1000);
+        await sleep(2000);
         await targetElement.click();
         
         console.log("Waiting 20 seconds for Turnstile verification to auto-solve...");
         await sleep(20000);
 
-        // 3. 截取并保存验证过程中的屏幕状态（供下载排查）
+        // 3. 截取并保存验证过程中的屏幕状态
         await page.screenshot({ path: 'verification_result.png' });
         console.log("Screenshot saved as verification_result.png");
 
@@ -208,7 +215,7 @@ async function main() {
                 await sendTelegramNotification(`⚠️ [Gaming4Free] 续期失败：点击后时间未增加（仍为 ${timeAfter}）。可能是验证码未通过或系统被阻挡，请下载 Artifact 截图排查。`);
             }
         } else {
-            console.log("Failed to parse remaining time. Skipping strict delta verification.");
+            console.log("Failed to parse remaining time. Skipping delta verification.");
         }
 
     } catch (error) {
