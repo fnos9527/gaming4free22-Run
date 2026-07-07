@@ -156,8 +156,8 @@ async function main() {
         const timeBefore = await getRemainingTime(page);
         console.log(`[Timer] Remaining time BEFORE click: ${timeBefore}`);
 
-        // 2. 扫描包含文本的活动元素 (排除隐藏元素)
-        const elements = await page.$$('button, span, div, a');
+        // 2. 扫描特定类型的活动元素 (剔除了 div，彻底避开大盒子干扰)
+        const elements = await page.$$('button, span, a');
         let targetElement = null;
         for (const el of elements) {
             const isVisible = await page.evaluate(node => {
@@ -167,11 +167,14 @@ async function main() {
             }, el);
 
             if (isVisible) {
-                const text = await page.evaluate(node => node.textContent, el);
+                const rawText = await page.evaluate(node => node.textContent, el);
+                // 去除多余空格和换行，便于精确对比
+                const text = rawText.replace(/\s+/g, ' ').trim().toLowerCase();
+                
                 if (
                     text.includes('+ 90 min') || 
                     text.includes('+90 min') || 
-                    text.includes('watch ad · +90 min') || 
+                    text.includes('watch ad') || 
                     text.includes('+ top up 100h')
                 ) {
                     targetElement = el;
@@ -193,11 +196,11 @@ async function main() {
             return;
         }
 
-        // 输出定位到的原始 Target 元素的 HTML，以便调试核对
+        // 输出定位到的真实 Target 元素的 HTML，以便调试核对
         const targetHtml = await page.evaluate(el => el.outerHTML, targetElement);
         console.log(`[Debug] Matched Target Element HTML: ${targetHtml}`);
 
-        // 3. 智能寻找父级点击对象：如果是 span/div 等文本标签，自动提取最近的外层真实 button 或 a 标签
+        // 3. 智能寻找父级点击对象：如果是 span 等文本标签，自动提取最近的外层真实 button 或 a 标签
         let clickableElement = targetElement;
         const tagName = await page.evaluate(el => el.tagName.toLowerCase(), targetElement);
         if (tagName !== 'button' && tagName !== 'a') {
@@ -226,11 +229,11 @@ async function main() {
             console.log(`[Debug] Bounding box found: x=${box.x}, y=${box.y}, w=${box.width}, h=${box.height}`);
             console.log("Simulating high-fidelity human mouse trajectory click...");
             
-            // 物理鼠标移动到元素中心
+            // 物理鼠标平滑移动到按钮正中心
             await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
             await sleep(500);
             
-            // 物理按下并保持 100ms（代表正常按压）
+            // 物理按下并保持 100ms（代表人类正常按压）
             await page.mouse.down();
             await sleep(100);
             await page.mouse.up();
@@ -241,7 +244,7 @@ async function main() {
             await clickableElement.click();
         }
         
-        // 🌟 阶段 2 截图：点击 3 秒后（验证码弹窗应该被唤醒的瞬间）
+        // 🌟 阶段 2 截图：点击 3 秒后（验证码弹窗或广告应该被唤醒的瞬间）
         await sleep(3000);
         await page.screenshot({ path: '2_after_click.png' });
         console.log("Saved screenshot: 2_after_click.png");
@@ -251,7 +254,7 @@ async function main() {
         if (timeAfterFirstTry === timeBefore) {
             console.log("[Warning] Time did not change after physical mouse click. Attempting fallback JS HTMLElement.click()...");
             await page.evaluate(el => el.click(), clickableElement);
-            await sleep(3000); // 留时间给 JS 触发的弹窗唤醒
+            await sleep(3000); // 留时间给 JS 触发的弹窗/广告唤醒
         }
 
         console.log("Waiting 20 seconds for Turnstile verification to auto-solve...");
