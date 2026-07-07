@@ -95,11 +95,13 @@ jobs:
       - name: Download and Run Xray-core
         run: |
           curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip xray.zip
-          chmod +x xray
-          # 后台运行 xray
-          ./xray run -c config.json > xray.log 2>&1 &
-          sleep 3
+          # 创建专用目录并解压，避免与仓库根目录的 README.md 冲突
+          mkdir -p xray-bin
+          unzip -o xray.zip -d xray-bin
+          chmod +x xray-bin/xray
+          # 从新目录后台运行 xray
+          ./xray-bin/xray run -c config.json > xray.log 2>&1 &
+          sleep 5
           # 检测代理端口是否正常开启
           nc -z -v 127.0.0.1 10808 || { echo 'Local SOCKS5 proxy port is not active!'; exit 1; }
 
