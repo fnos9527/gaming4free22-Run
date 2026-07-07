@@ -5,7 +5,7 @@ const CONSOLE_URL = process.env.CONSOLE_URL || 'https://control.gaming4free.net/
 const COOKIE_XSRF = process.env.COOKIE_XSRF;
 const COOKIE_SESSION = process.env.COOKIE_SESSION;
 
-// 自动清洗 Cookie 数据的安全过滤函数
+// 提取纯净 Cookie 的安全清洗函数
 function cleanCookieValue(rawInput, cookieName) {
     if (!rawInput) return '';
     let cleaned = rawInput.trim();
@@ -91,20 +91,20 @@ async function main() {
             turnstile: true, // 开启 Turnstile 自动绕过机制
             disableXvfb: false,
             connectOption: {
-                defaultViewport: null // 禁用默认的 800x600 视口，跟随浏览器窗口大小
+                defaultViewport: null // 跟随窗口大小
             },
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--proxy-server=socks5://127.0.0.1:10808',
-                '--window-size=1280,800' // 强制浏览器启动时调整为 1280x800 大屏窗口
+                '--window-size=1280,1200' // 关键修改：高宽调升到 1280x1200 像素，确保展开无遮挡
             ]
         });
         browser = response.browser;
         page = response.page;
 
-        // 双重保险：再次显式设置页面视口尺寸为电脑版
-        await page.setViewport({ width: 1280, height: 800 });
+        // 双重保险：显式设置页面视口高度为 1200 像素
+        await page.setViewport({ width: 1280, height: 1200 });
 
     } catch (error) {
         console.error("Failed to launch browser:", error);
@@ -157,25 +157,34 @@ async function main() {
         const timeBefore = await getRemainingTime(page);
         console.log(`[Timer] Remaining time BEFORE click: ${timeBefore}`);
 
-        // 2. 扫描续期按钮
+        // 2. 扫描续期按钮 (强化逻辑：仅匹配在屏幕上【真实显示且长宽大于0】的活动元素)
         const elements = await page.$$('button, span, div, a');
         let targetElement = null;
         for (const el of elements) {
-            const text = await page.evaluate(node => node.textContent, el);
-            if (
-                text.includes('+ 90 min') || 
-                text.includes('+90 min') || 
-                text.includes('watch ad · +90 min') || 
-                text.includes('+ top up 100h')
-            ) {
-                targetElement = el;
-                break;
+            const isVisible = await page.evaluate(node => {
+                if (!node) return false;
+                const style = window.getComputedStyle(node);
+                // 确保元素没有被 CSS 隐藏，且本身具有实际宽高物理大小
+                return style.display !== 'none' && style.visibility !== 'hidden' && node.offsetWidth > 0 && node.offsetHeight > 0;
+            }, el);
+
+            if (isVisible) {
+                const text = await page.evaluate(node => node.textContent, el);
+                if (
+                    text.includes('+ 90 min') || 
+                    text.includes('+90 min') || 
+                    text.includes('watch ad · +90 min') || 
+                    text.includes('+ top up 100h')
+                ) {
+                    targetElement = el;
+                    break;
+                }
             }
         }
 
         const pageContent = await page.content();
         if (!targetElement) {
-            console.log("Could not find the renewal button. Checking if it is currently on CD...");
+            console.log("Could not find any active/visible renewal button. Checking if it is currently on CD...");
             if (pageContent.includes('cd')) {
                 console.log("The renewal is currently on cooldown (CD). Skipping.");
             } else {
@@ -187,7 +196,6 @@ async function main() {
         }
 
         console.log("Renewal button found. Scrolling into view and clicking to trigger Turnstile...");
-        // 滚动至页面中心并轻微等待，确保能被真实模拟鼠标精准点中
         await page.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }), targetElement);
         await sleep(2000);
         await targetElement.click();
@@ -207,7 +215,6 @@ async function main() {
         const secsAfter = timeStringToSeconds(timeAfter);
 
         if (secsBefore > 0 && secsAfter > 0) {
-            // 如果点击后时间比点击前增加了 10 分钟（600秒）以上，则说明成功
             if (secsAfter > secsBefore + 600) {
                 console.log(`🎉 Success! Time increased from ${timeBefore} to ${timeAfter}.`);
             } else {
