@@ -1,0 +1,121 @@
+name: Game Container Auto Renewal
+
+on:
+  schedule:
+    # 每 6 小时自动运行一次 (可根据需要自行调整)
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # 支持手动点击触发
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install System Dependencies for Puppeteer and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgbm-dev udev unzip netcat-openbsd
+
+      - name: Create package.json and Install Dependencies
+        run: |
+          npm init -y
+          npm install puppeteer-real-browser axios
+
+      - name: Parse VLESS Link and Generate Xray Config
+        env:
+          VLESS_LINK: ${{ secrets.VLESS_LINK }}
+        run: |
+          node -e "
+          const fs = require('fs');
+          const { URL } = require('url');
+          const vlessLink = process.env.VLESS_LINK;
+          if (!vlessLink) {
+              console.error('Error: VLESS_LINK secret is missing!');
+              process.exit(1);
+          }
+          try {
+              const urlObj = new URL(vlessLink);
+              const uuid = urlObj.username;
+              const address = urlObj.hostname;
+              const port = parseInt(urlObj.port);
+              const searchParams = urlObj.searchParams;
+              const type = searchParams.get('type') || 'tcp';
+              const security = searchParams.get('security') || 'none';
+              const path = searchParams.get('path') || '/';
+              const sni = searchParams.get('sni') || searchParams.get('host') || address;
+              const host = searchParams.get('host') || address;
+
+              const config = {
+                  'log': { 'loglevel': 'warning' },
+                  'inbounds': [{
+                      'listen': '127.0.0.1',
+                      'port': 10808,
+                      'protocol': 'socks',
+                      'settings': { 'udp': true, 'auth': 'noauth' }
+                  }],
+                  'outbounds': [{
+                      'protocol': 'vless',
+                      'settings': {
+                          'vnext': [{
+                              'address': address,
+                              'port': port,
+                              'users': [{ 'id': uuid, 'encryption': 'none' }]
+                          }]
+                      },
+                      'streamSettings': {
+                          'network': type,
+                          'security': security,
+                          'tlsSettings': security === 'tls' ? {
+                              'serverName': sni,
+                              'allowInsecure': false
+                          } : undefined,
+                          'wsSettings': type === 'ws' ? {
+                              'path': path,
+                              'headers': { 'Host': host }
+                          } : undefined
+                      }
+                  }]
+              };
+              fs.writeFileSync('config.json', JSON.stringify(config, null, 2));
+              console.log('Successfully generated config.json for Xray-core!');
+          } catch (err) {
+              console.error('Failed to parse VLESS_LINK:', err.message);
+              process.exit(1);
+          }
+          "
+
+      - name: Download and Run Xray-core
+        run: |
+          curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip xray.zip
+          chmod +x xray
+          # 后台运行 xray
+          ./xray run -c config.json > xray.log 2>&1 &
+          sleep 3
+          # 检测代理端口是否正常开启
+          nc -z -v 127.0.0.1 10808 || { echo 'Local SOCKS5 proxy port is not active!'; exit 1; }
+
+      - name: Run Renewal Script via Xvfb
+        env:
+          CONSOLE_URL: ${{ secrets.CONSOLE_URL }}
+          COOKIE_XSRF: ${{ secrets.COOKIE_XSRF }}
+          COOKIE_SESSION: ${{ secrets.COOKIE_SESSION }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          xvfb-run --server-args="-screen 0 1280x800x24" node renew.js
+
+      - name: Upload Debug Screenshot on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshot
+          path: verification_result.png
