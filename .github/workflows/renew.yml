@@ -110,12 +110,12 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # 关键修改：将虚拟屏幕高度调整为 1200 像素，确保底部按钮完全露出来
           xvfb-run --server-args="-screen 0 1280x1200x24" node renew.js
 
-      - name: Upload Debug Screenshot
+      # 修改此步骤：打包并上传运行过程中所有的截图（1、2、3）
+      - name: Upload Debug Screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshot
-          path: verification_result.png
+          name: debug-screenshots
+          path: "*.png"
