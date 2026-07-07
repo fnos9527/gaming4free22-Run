@@ -156,7 +156,7 @@ async function main() {
         const timeBefore = await getRemainingTime(page);
         console.log(`[Timer] Remaining time BEFORE click: ${timeBefore}`);
 
-        // 2. 扫描包含文本的活动元素
+        // 2. 扫描包含文本的活动元素 (排除隐藏元素)
         const elements = await page.$$('button, span, div, a');
         let targetElement = null;
         for (const el of elements) {
@@ -193,14 +193,22 @@ async function main() {
             return;
         }
 
-        // 3. 智能寻找父级点击对象：如果是 span/div 等文本标签，自动提取最近的外层真实 button 标签
+        // 输出定位到的原始 Target 元素的 HTML，以便调试核对
+        const targetHtml = await page.evaluate(el => el.outerHTML, targetElement);
+        console.log(`[Debug] Matched Target Element HTML: ${targetHtml}`);
+
+        // 3. 智能寻找父级点击对象：如果是 span/div 等文本标签，自动提取最近的外层真实 button 或 a 标签
         let clickableElement = targetElement;
         const tagName = await page.evaluate(el => el.tagName.toLowerCase(), targetElement);
         if (tagName !== 'button' && tagName !== 'a') {
             const parentButton = await page.evaluateHandle(el => el.closest('button, a'), targetElement);
-            if (parentButton && await page.evaluate(el => el !== null, parentButton)) {
+            const hasParent = await page.evaluate(el => el !== null, parentButton);
+            if (hasParent) {
                 clickableElement = parentButton;
-                console.log("Successfully matched and extracted parent clickable <button> element wrapper.");
+                const clickableHtml = await page.evaluate(el => el.outerHTML, clickableElement);
+                console.log(`[Debug] Using parent clickable wrapper: ${clickableHtml}`);
+            } else {
+                console.log("[Debug] No parent <button> or <a> found, will click target directly.");
             }
         }
 
@@ -212,13 +220,39 @@ async function main() {
         await page.screenshot({ path: '1_before_click.png' });
         console.log("Saved screenshot: 1_before_click.png");
 
-        console.log("Clicking the main button...");
-        await clickableElement.click();
+        // 4. 执行高保真物理鼠标模拟点击
+        const box = await clickableElement.boundingBox();
+        if (box) {
+            console.log(`[Debug] Bounding box found: x=${box.x}, y=${box.y}, w=${box.width}, h=${box.height}`);
+            console.log("Simulating high-fidelity human mouse trajectory click...");
+            
+            // 物理鼠标移动到元素中心
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+            await sleep(500);
+            
+            // 物理按下并保持 100ms（代表正常按压）
+            await page.mouse.down();
+            await sleep(100);
+            await page.mouse.up();
+            
+            console.log("High-fidelity human mouse click complete.");
+        } else {
+            console.log("[Debug] Bounding box not found, falling back to Puppeteer click.");
+            await clickableElement.click();
+        }
         
-        // 🌟 阶段 2 截图：点击 3 秒后（验证码弹窗出现的瞬间）
+        // 🌟 阶段 2 截图：点击 3 秒后（验证码弹窗应该被唤醒的瞬间）
         await sleep(3000);
         await page.screenshot({ path: '2_after_click.png' });
         console.log("Saved screenshot: 2_after_click.png");
+
+        // 5. 兜底策略：如果物理点击未触发状态改变（时间没变），强制通过内核 JS 的 HTMLElement.click() 触发
+        const timeAfterFirstTry = await getRemainingTime(page);
+        if (timeAfterFirstTry === timeBefore) {
+            console.log("[Warning] Time did not change after physical mouse click. Attempting fallback JS HTMLElement.click()...");
+            await page.evaluate(el => el.click(), clickableElement);
+            await sleep(3000); // 留时间给 JS 触发的弹窗唤醒
+        }
 
         console.log("Waiting 20 seconds for Turnstile verification to auto-solve...");
         await sleep(20000);
@@ -227,7 +261,7 @@ async function main() {
         await page.screenshot({ path: '3_final_result.png' });
         console.log("Saved screenshot: 3_final_result.png");
 
-        // 4. 获取点击后的剩余时间并对比
+        // 6. 获取点击后的剩余时间并对比
         const timeAfter = await getRemainingTime(page);
         console.log(`[Timer] Remaining time AFTER click: ${timeAfter}`);
 
