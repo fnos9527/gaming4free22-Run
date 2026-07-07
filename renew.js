@@ -121,18 +121,20 @@ async function main() {
         await page.goto(CONSOLE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
         await sleep(5000);
 
-        // 检测是否成功登录
-        const pageContent = await page.content();
-        if (pageContent.includes('login') || pageContent.includes('Sign In') || !pageContent.includes('container@pterodactyl')) {
-            console.log("Session might be expired or cookies are invalid.");
-            await sendTelegramNotification("⚠️ [Gaming4Free] Cookie 已过期或失效！请更新您的 GitHub Secrets 配置。");
+        // 获取跳转后的当前 URL 来精确判定登录状态
+        const currentUrl = page.url();
+        console.log(`Current page URL: ${currentUrl}`);
+
+        if (currentUrl.includes('/auth/login') || currentUrl.includes('/login') || !currentUrl.includes('/server/')) {
+            console.log("Detected redirection to login page or failed to load the server page. Session is expired.");
+            await sendTelegramNotification("⚠️ [Gaming4Free] Cookie 已过期或失效！请重新获取并更新您的 GitHub Secrets 配置。");
             await browser.close();
             process.exit(0); 
         }
 
-        console.log("Successfully logged in. Scanning for renewal button...");
+        console.log("Successfully logged in! Scanning for renewal button...");
 
-        // 寻找匹配“+ 90 min”等字样的按钮
+        // 寻找页面中的“+ 90 min”等字样的按钮
         const elements = await page.$$('button, span, div, a');
         let targetElement = null;
         for (const el of elements) {
@@ -148,6 +150,7 @@ async function main() {
             }
         }
 
+        const pageContent = await page.content();
         if (!targetElement) {
             console.log("Could not find the renewal button. Checking if it is currently in CD...");
             if (pageContent.includes('cd')) {
@@ -165,7 +168,7 @@ async function main() {
         console.log("Waiting 20 seconds for Turnstile verification to auto-solve...");
         await sleep(20000);
 
-        // 截图保存
+        // 截图保存为 artifacts，可以在 GitHub Actions 页面下载验证效果
         await page.screenshot({ path: 'verification_result.png' });
         console.log("Screenshot saved as verification_result.png");
 
