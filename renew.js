@@ -5,6 +5,41 @@ const CONSOLE_URL = process.env.CONSOLE_URL || 'https://control.gaming4free.net/
 const COOKIE_XSRF = process.env.COOKIE_XSRF;
 const COOKIE_SESSION = process.env.COOKIE_SESSION;
 
+// 自动清洗 Cookie 数据的安全过滤函数
+function cleanCookieValue(rawInput, cookieName) {
+    if (!rawInput) return '';
+    let cleaned = rawInput.trim();
+    
+    // 如果不小心复制了 "Set-Cookie:" 开头，将其切除
+    if (cleaned.toLowerCase().startsWith('set-cookie:')) {
+        cleaned = cleaned.substring(11).trim();
+    }
+    
+    // 如果包含等号，尝试提取指定名称对应的 Value 值
+    if (cleaned.includes('=')) {
+        const parts = cleaned.split(';');
+        for (let part of parts) {
+            part = part.trim();
+            if (part.startsWith(cookieName + '=')) {
+                return part.substring(cookieName.length + 1);
+            }
+        }
+        // 如果没有分号但有等号，判断是否是单纯的 "NAME=VALUE" 形式
+        const eqIndex = cleaned.indexOf('=');
+        const key = cleaned.substring(0, eqIndex).trim();
+        if (key.toLowerCase() === cookieName.toLowerCase()) {
+            return cleaned.substring(eqIndex + 1).trim();
+        }
+    }
+    
+    // 移除尾部可能带有的分号
+    if (cleaned.endsWith(';')) {
+        cleaned = cleaned.slice(0, -1);
+    }
+    
+    return cleaned;
+}
+
 async function sendTelegramNotification(message) {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -40,12 +75,12 @@ async function main() {
     try {
         const response = await connect({
             headless: false,
-            turnstile: true, // 启用内置 Turnstile 自动检测与解决功能
+            turnstile: true, // 启用内置 Turnstile 自动绕过功能
             disableXvfb: false,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--proxy-server=socks5://127.0.0.1:10808' // 强制作业流通过 xray 本地代理
+                '--proxy-server=socks5://127.0.0.1:10808' // 使用 xray 本地代理
             ]
         });
         browser = response.browser;
@@ -57,25 +92,30 @@ async function main() {
     }
 
     try {
-        console.log("Setting session cookies...");
-        await page.setCookie(
-            {
-                name: 'XSRF-TOKEN',
-                value: COOKIE_XSRF,
-                domain: 'control.gaming4free.net',
-                path: '/',
-                secure: true,
-                httpOnly: false
-            },
-            {
-                name: 'pelican_session',
-                value: COOKIE_SESSION,
-                domain: 'control.gaming4free.net',
-                path: '/',
-                secure: true,
-                httpOnly: true
-            }
-        );
+        // 清洗并提取纯净的 Cookie 值
+        const xsrfValue = cleanCookieValue(COOKIE_XSRF, 'XSRF-TOKEN');
+        const sessionValue = cleanCookieValue(COOKIE_SESSION, 'pelican_session');
+
+        console.log(`Setting session cookies... (XSRF Length: ${xsrfValue.length}, Session Length: ${sessionValue.length})`);
+        
+        // 逐个设置 Cookie 避免格式冲突
+        await page.setCookie({
+            name: 'XSRF-TOKEN',
+            value: xsrfValue,
+            domain: 'control.gaming4free.net',
+            path: '/',
+            secure: true,
+            httpOnly: false
+        });
+
+        await page.setCookie({
+            name: 'pelican_session',
+            value: sessionValue,
+            domain: 'control.gaming4free.net',
+            path: '/',
+            secure: true,
+            httpOnly: true
+        });
 
         console.log(`Navigating to console URL: ${CONSOLE_URL}`);
         await page.goto(CONSOLE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
@@ -87,12 +127,12 @@ async function main() {
             console.log("Session might be expired or cookies are invalid.");
             await sendTelegramNotification("⚠️ [Gaming4Free] Cookie 已过期或失效！请更新您的 GitHub Secrets 配置。");
             await browser.close();
-            process.exit(0); // 安全退出，不导致工作流直接标记为红色错误
+            process.exit(0); 
         }
 
         console.log("Successfully logged in. Scanning for renewal button...");
 
-        // 在页面中寻找匹配“+ 90 min”、“watch ad”、“+ top up 100h”文字的按钮
+        // 寻找匹配“+ 90 min”等字样的按钮
         const elements = await page.$$('button, span, div, a');
         let targetElement = null;
         for (const el of elements) {
@@ -122,11 +162,10 @@ async function main() {
         console.log("Renewal button found. Clicking to trigger Turnstile...");
         await targetElement.click();
         
-        // 留出时间给 puppeteer-real-browser 框架自动勾选并过检 Cloudflare Turnstile
         console.log("Waiting 20 seconds for Turnstile verification to auto-solve...");
         await sleep(20000);
 
-        // 截图保存为 artifact 方便排查
+        // 截图保存
         await page.screenshot({ path: 'verification_result.png' });
         console.log("Screenshot saved as verification_result.png");
 
