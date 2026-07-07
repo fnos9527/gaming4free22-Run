@@ -88,22 +88,21 @@ async function main() {
     try {
         const response = await connect({
             headless: false,
-            turnstile: true, // 开启 Turnstile 自动绕过机制
+            turnstile: true, // 开启自动绕过
             disableXvfb: false,
             connectOption: {
-                defaultViewport: null // 跟随窗口大小
+                defaultViewport: null
             },
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--proxy-server=socks5://127.0.0.1:10808',
-                '--window-size=1280,1200' // 关键修改：高宽调升到 1280x1200 像素，确保展开无遮挡
+                '--window-size=1280,1200'
             ]
         });
         browser = response.browser;
         page = response.page;
 
-        // 双重保险：显式设置页面视口高度为 1200 像素
         await page.setViewport({ width: 1280, height: 1200 });
 
     } catch (error) {
@@ -140,7 +139,7 @@ async function main() {
         await page.goto(CONSOLE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
         await sleep(5000);
 
-        // 验证跳转状态
+        // 验证状态
         const currentUrl = page.url();
         console.log(`Current page URL: ${currentUrl}`);
 
@@ -157,14 +156,13 @@ async function main() {
         const timeBefore = await getRemainingTime(page);
         console.log(`[Timer] Remaining time BEFORE click: ${timeBefore}`);
 
-        // 2. 扫描续期按钮 (强化逻辑：仅匹配在屏幕上【真实显示且长宽大于0】的活动元素)
+        // 2. 扫描包含文本的活动元素
         const elements = await page.$$('button, span, div, a');
         let targetElement = null;
         for (const el of elements) {
             const isVisible = await page.evaluate(node => {
                 if (!node) return false;
                 const style = window.getComputedStyle(node);
-                // 确保元素没有被 CSS 隐藏，且本身具有实际宽高物理大小
                 return style.display !== 'none' && style.visibility !== 'hidden' && node.offsetWidth > 0 && node.offsetHeight > 0;
             }, el);
 
@@ -190,22 +188,44 @@ async function main() {
             } else {
                 console.log("Renewal button is missing for an unknown reason.");
             }
-            await page.screenshot({ path: 'verification_result.png' });
+            await page.screenshot({ path: '1_before_click.png' });
             await browser.close();
             return;
         }
 
-        console.log("Renewal button found. Scrolling into view and clicking to trigger Turnstile...");
-        await page.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }), targetElement);
+        // 3. 智能寻找父级点击对象：如果是 span/div 等文本标签，自动提取最近的外层真实 button 标签
+        let clickableElement = targetElement;
+        const tagName = await page.evaluate(el => el.tagName.toLowerCase(), targetElement);
+        if (tagName !== 'button' && tagName !== 'a') {
+            const parentButton = await page.evaluateHandle(el => el.closest('button, a'), targetElement);
+            if (parentButton && await page.evaluate(el => el !== null, parentButton)) {
+                clickableElement = parentButton;
+                console.log("Successfully matched and extracted parent clickable <button> element wrapper.");
+            }
+        }
+
+        console.log("Scrolling button into view...");
+        await page.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }), clickableElement);
         await sleep(2000);
-        await targetElement.click();
+
+        // 🌟 阶段 1 截图：点击之前的初始状态
+        await page.screenshot({ path: '1_before_click.png' });
+        console.log("Saved screenshot: 1_before_click.png");
+
+        console.log("Clicking the main button...");
+        await clickableElement.click();
         
+        // 🌟 阶段 2 截图：点击 3 秒后（验证码弹窗出现的瞬间）
+        await sleep(3000);
+        await page.screenshot({ path: '2_after_click.png' });
+        console.log("Saved screenshot: 2_after_click.png");
+
         console.log("Waiting 20 seconds for Turnstile verification to auto-solve...");
         await sleep(20000);
 
-        // 3. 截取并保存验证过程中的屏幕状态
-        await page.screenshot({ path: 'verification_result.png' });
-        console.log("Screenshot saved as verification_result.png");
+        // 🌟 阶段 3 截图：最终过检后的界面状态
+        await page.screenshot({ path: '3_final_result.png' });
+        console.log("Saved screenshot: 3_final_result.png");
 
         // 4. 获取点击后的剩余时间并对比
         const timeAfter = await getRemainingTime(page);
@@ -218,8 +238,8 @@ async function main() {
             if (secsAfter > secsBefore + 600) {
                 console.log(`🎉 Success! Time increased from ${timeBefore} to ${timeAfter}.`);
             } else {
-                console.log(`⚠️ Warning: Time did NOT increase. (Before: ${timeBefore} -> After: ${timeAfter}). The Turnstile solver may have failed.`);
-                await sendTelegramNotification(`⚠️ [Gaming4Free] 续期失败：点击后时间未增加（仍为 ${timeAfter}）。可能是验证码未通过或系统被阻挡，请下载 Artifact 截图排查。`);
+                console.log(`⚠️ Warning: Time did NOT increase. (Before: ${timeBefore} -> After: ${timeAfter}).`);
+                await sendTelegramNotification(`⚠️ [Gaming4Free] 续期未成功：请下载 Action 的 Artifacts 里的 debug-screenshots.zip 解压，核对点击和验证过程。`);
             }
         } else {
             console.log("Failed to parse remaining time. Skipping delta verification.");
