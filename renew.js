@@ -44,7 +44,7 @@ async function getRemainingTime(page) {
     }
 }
 
-// 将 "HH:MM:SS" 时间字符串转换为总秒数
+// 将 "HH:MM:SS" 时间字符串转换为总秒数以便对比
 function timeStringToSeconds(timeStr) {
     if (!timeStr) return 0;
     const parts = timeStr.split(':').map(Number);
@@ -253,7 +253,7 @@ async function main() {
         await page.screenshot({ path: '2_after_click.png' });
         console.log("Saved screenshot: 2_after_click.png");
 
-        // 广告弹窗监听与关闭逻辑
+        // 🌟 5. 广告弹窗监听与关闭逻辑 (重构核心)
         console.log("Detecting ad modal and waiting for rewards...");
         let modalDetected = false;
         
@@ -288,40 +288,50 @@ async function main() {
             }
 
             if (rewardGranted) {
-                await sleep(1500);
+                await sleep(2000); // 留出充足渲染时间
                 
                 console.log("Attempting to close the ad modal...");
                 
+                // [优化 A] 精准定位关闭按钮，剔除视频内部控制元素的影响
                 const closeResult = await page.evaluate(() => {
                     function findCloseElement() {
+                        // 1. 寻找 "Reward Granted" 元素作为锚点
                         const anchor = Array.from(document.querySelectorAll('*')).find(el => {
                             return el.textContent && el.textContent.includes('Reward Granted') && el.offsetWidth > 0;
                         });
                         
                         if (anchor) {
                             let parent = anchor.parentElement;
-                            for (let i = 0; i < 5; i++) {
+                            // 往上找 4 层寻找包含整个顶部 Header 控制条的节点
+                            for (let i = 0; i < 4; i++) {
                                 if (!parent) break;
-                                const closeBtn = parent.querySelector('[class*="close" i], button, svg, [role="button"]');
-                                if (closeBtn && closeBtn !== anchor) {
-                                    return closeBtn;
+                                
+                                // 查找该顶栏中的点击元素（排除视频播放器/控制台本身的 class）
+                                const candidates = parent.querySelectorAll('[class*="close" i], button, svg, [role="button"]');
+                                for (const candidate of candidates) {
+                                    // 排除视频播放器内部控制类的干扰按钮（防止误点静音/暂停）
+                                    if (candidate.closest('.vjs-control-bar, .video-player, [class*="video" i], [class*="player" i]')) {
+                                        continue;
+                                    }
+                                    if (candidate !== anchor && !anchor.contains(candidate) && candidate.offsetWidth > 0) {
+                                        return candidate;
+                                    }
                                 }
                                 parent = parent.parentElement;
                             }
                         }
 
-                        const commonSelectors = [
-                            '[class*="close" i]',
-                            '[id*="close" i]',
-                            '[aria-label*="close" i]',
-                            'button'
-                        ];
+                        // 2. 备选方案：全局查找带有 "close" 属性或 "X" 文字的显式按钮
+                        const commonSelectors = ['[class*="close" i]', '[aria-label*="close" i]', 'button'];
                         for (const selector of commonSelectors) {
                             const elements = document.querySelectorAll(selector);
                             for (const el of elements) {
+                                if (el.closest('.vjs-control-bar, .video-player, [class*="video" i], [class*="player" i]')) {
+                                    continue; // 依旧剔除视频内部元素
+                                }
                                 if (el.offsetWidth > 0 && el.offsetHeight > 0) {
                                     const text = (el.textContent || '').trim();
-                                    if (text === '×' || text.toLowerCase() === 'x' || el.innerHTML.includes('svg')) {
+                                    if (text === '×' || text.toLowerCase() === 'x') {
                                         return el;
                                     }
                                 }
@@ -335,20 +345,26 @@ async function main() {
                         closeEl.scrollIntoView({ behavior: 'instant', block: 'center' });
                         if (typeof closeEl.click === 'function') {
                             closeEl.click();
-                            return { success: true, method: 'element.click()' };
+                            return { success: true, elementHtml: closeEl.outerHTML || 'SVG/Path' };
                         } else {
                             const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
                             closeEl.dispatchEvent(ev);
-                            return { success: true, method: 'dispatchEvent' };
+                            return { success: true, elementHtml: 'Dispatched Event' };
                         }
                     }
                     return { success: false };
                 });
 
                 console.log(`Close button click attempt result: ${JSON.stringify(closeResult)}`);
+                await sleep(2000);
 
-                if (!closeResult.success) {
-                    console.log("JS click fallback triggered: Trying physical coordinate click relative to anchor...");
+                // [优化 B] 弹窗状态验证器：如果检测到弹窗依然没有消失，则自动执行物理鼠标坐标点击强行突破！
+                const isModalStillOpen = await page.evaluate(() => {
+                    return document.body.innerText.includes('Reward Granted');
+                });
+
+                if (isModalStillOpen) {
+                    console.log("[Warning] Modal is still open after first click attempt. Executing coordinate fallback...");
                     const anchorBox = await page.evaluate(() => {
                         const anchor = Array.from(document.querySelectorAll('*')).find(el => {
                             return el.textContent && el.textContent.includes('Reward Granted') && el.offsetWidth > 0;
@@ -361,17 +377,22 @@ async function main() {
                     });
 
                     if (anchorBox) {
-                        const targetX = anchorBox.x + anchorBox.w + 45;
+                        // 在 "Reward Granted" 蓝色药丸框的最右侧边缘向右偏移 45~55 像素，正好落在 X 关闭按钮的位置
+                        const targetX = anchorBox.x + anchorBox.w + 48;
                         const targetY = anchorBox.y + anchorBox.h / 2;
-                        console.log(`Clicking coordinate offset: x=${targetX}, y=${targetY}`);
+                        console.log(`Clicking physical coordinate fallback: x=${targetX}, y=${targetY}`);
                         await page.mouse.click(targetX, targetY);
+                        await sleep(3000);
                     } else {
-                        console.log("No anchor box found, trying default coordinate click...");
-                        await page.mouse.click(740, 290); 
+                        console.log("No anchor found for coordinate click, clicking default modal close area...");
+                        await page.mouse.click(740, 290);
+                        await sleep(3000);
                     }
+                } else {
+                    console.log("Modal closed successfully after first click!");
                 }
                 
-                await sleep(5000); 
+                await sleep(3000); // 留时间给页面完成刷新
             } else {
                 console.log("Timed out waiting for 'Reward Granted'.");
             }
@@ -383,6 +404,7 @@ async function main() {
         await page.screenshot({ path: '3_final_result.png' });
         console.log("Saved screenshot: 3_final_result.png");
 
+        // 6. 获取点击后的剩余时间并对比
         const timeAfter = await getRemainingTime(page);
         console.log(`[Timer] Remaining time AFTER click: ${timeAfter}`);
 
@@ -400,10 +422,10 @@ async function main() {
             }
         } else {
             console.log("Failed to parse remaining time. Skipping delta verification.");
-            executionSuccess = true; // 若解析失败但未报错，保留提取 Cookie 的操作
+            executionSuccess = true; 
         }
 
-        // 🌟 核心修改：如果流程通畅，则提取当前最新的 Cookie 并保存到 cookies.json
+        // 保存 Cookie
         if (executionSuccess) {
             const currentCookies = await page.cookies();
             const newXsrf = currentCookies.find(c => c.name === 'XSRF-TOKEN')?.value;
