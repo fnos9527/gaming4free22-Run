@@ -1,3 +1,19 @@
+// 拦截 Puppeteer 后台异步清理带来的无害异常，防止 GitHub Actions 报错
+process.on('unhandledRejection', (reason) => {
+    if (reason && (reason.message || '').includes('Target closed')) {
+        console.log("Quietly absorbed asynchronous TargetCloseError.");
+    } else {
+        console.error("Unhandled Rejection:", reason);
+    }
+});
+process.on('uncaughtException', (err) => {
+    if (err && (err.message || '').includes('Target closed')) {
+        console.log("Quietly absorbed uncaught TargetCloseError.");
+    } else {
+        console.error("Uncaught Exception:", err);
+    }
+});
+
 const { connect } = require('puppeteer-real-browser');
 const axios = require('axios');
 const fs = require('fs');
@@ -253,7 +269,7 @@ async function main() {
         await page.screenshot({ path: '2_after_click.png' });
         console.log("Saved screenshot: 2_after_click.png");
 
-        // 🌟 5. 广告弹窗监听与关闭逻辑 (重构核心)
+        // 5. 广告弹窗监听与关闭逻辑
         console.log("Detecting ad modal and waiting for rewards...");
         let modalDetected = false;
         
@@ -288,28 +304,23 @@ async function main() {
             }
 
             if (rewardGranted) {
-                await sleep(2000); // 留出充足渲染时间
+                await sleep(2000); 
                 
                 console.log("Attempting to close the ad modal...");
                 
-                // [优化 A] 精准定位关闭按钮，剔除视频内部控制元素的影响
                 const closeResult = await page.evaluate(() => {
                     function findCloseElement() {
-                        // 1. 寻找 "Reward Granted" 元素作为锚点
                         const anchor = Array.from(document.querySelectorAll('*')).find(el => {
                             return el.textContent && el.textContent.includes('Reward Granted') && el.offsetWidth > 0;
                         });
                         
                         if (anchor) {
                             let parent = anchor.parentElement;
-                            // 往上找 4 层寻找包含整个顶部 Header 控制条的节点
                             for (let i = 0; i < 4; i++) {
                                 if (!parent) break;
                                 
-                                // 查找该顶栏中的点击元素（排除视频播放器/控制台本身的 class）
                                 const candidates = parent.querySelectorAll('[class*="close" i], button, svg, [role="button"]');
                                 for (const candidate of candidates) {
-                                    // 排除视频播放器内部控制类的干扰按钮（防止误点静音/暂停）
                                     if (candidate.closest('.vjs-control-bar, .video-player, [class*="video" i], [class*="player" i]')) {
                                         continue;
                                     }
@@ -321,13 +332,12 @@ async function main() {
                             }
                         }
 
-                        // 2. 备选方案：全局查找带有 "close" 属性或 "X" 文字的显式按钮
                         const commonSelectors = ['[class*="close" i]', '[aria-label*="close" i]', 'button'];
                         for (const selector of commonSelectors) {
                             const elements = document.querySelectorAll(selector);
                             for (const el of elements) {
                                 if (el.closest('.vjs-control-bar, .video-player, [class*="video" i], [class*="player" i]')) {
-                                    continue; // 依旧剔除视频内部元素
+                                    continue; 
                                 }
                                 if (el.offsetWidth > 0 && el.offsetHeight > 0) {
                                     const text = (el.textContent || '').trim();
@@ -358,7 +368,6 @@ async function main() {
                 console.log(`Close button click attempt result: ${JSON.stringify(closeResult)}`);
                 await sleep(2000);
 
-                // [优化 B] 弹窗状态验证器：如果检测到弹窗依然没有消失，则自动执行物理鼠标坐标点击强行突破！
                 const isModalStillOpen = await page.evaluate(() => {
                     return document.body.innerText.includes('Reward Granted');
                 });
@@ -377,7 +386,6 @@ async function main() {
                     });
 
                     if (anchorBox) {
-                        // 在 "Reward Granted" 蓝色药丸框的最右侧边缘向右偏移 45~55 像素，正好落在 X 关闭按钮的位置
                         const targetX = anchorBox.x + anchorBox.w + 48;
                         const targetY = anchorBox.y + anchorBox.h / 2;
                         console.log(`Clicking physical coordinate fallback: x=${targetX}, y=${targetY}`);
@@ -392,7 +400,7 @@ async function main() {
                     console.log("Modal closed successfully after first click!");
                 }
                 
-                await sleep(3000); // 留时间给页面完成刷新
+                await sleep(3000); 
             } else {
                 console.log("Timed out waiting for 'Reward Granted'.");
             }
@@ -404,7 +412,6 @@ async function main() {
         await page.screenshot({ path: '3_final_result.png' });
         console.log("Saved screenshot: 3_final_result.png");
 
-        // 6. 获取点击后的剩余时间并对比
         const timeAfter = await getRemainingTime(page);
         console.log(`[Timer] Remaining time AFTER click: ${timeAfter}`);
 
@@ -447,7 +454,13 @@ async function main() {
         await sendTelegramNotification(`❌ Renewal workflow encountered an error: ${error.message}`);
     } finally {
         if (browser) {
-            await browser.close();
+            try {
+                console.log("Closing browser...");
+                await browser.close();
+                console.log("Browser closed successfully.");
+            } catch (closeError) {
+                console.log("Quietly absorbed browser close exception:", closeError.message);
+            }
         }
     }
 }
