@@ -1,5 +1,6 @@
 const { connect } = require('puppeteer-real-browser');
 const axios = require('axios');
+const fs = require('fs');
 
 const CONSOLE_URL = process.env.CONSOLE_URL || 'https://control.gaming4free.net/server/ad2c636e/console';
 const COOKIE_XSRF = process.env.COOKIE_XSRF;
@@ -43,7 +44,7 @@ async function getRemainingTime(page) {
     }
 }
 
-// 将 "HH:MM:SS" 时间字符串转换为总秒数以便对比
+// 将 "HH:MM:SS" 时间字符串转换为总秒数
 function timeStringToSeconds(timeStr) {
     if (!timeStr) return 0;
     const parts = timeStr.split(':').map(Number);
@@ -76,10 +77,31 @@ async function sleep(ms) {
 }
 
 async function main() {
-    if (!COOKIE_XSRF || !COOKIE_SESSION) {
-        console.error("Missing cookies in environment variables!");
-        await sendTelegramNotification("❌ Cookie setup is incomplete or missing in GitHub Secrets.");
-        process.exit(1);
+    let xsrfValue = '';
+    let sessionValue = '';
+
+    // 优先从本地 cookies.json 加载
+    if (fs.existsSync('cookies.json')) {
+        try {
+            const saved = JSON.parse(fs.readFileSync('cookies.json', 'utf-8'));
+            xsrfValue = saved.xsrf;
+            sessionValue = saved.session;
+            console.log("Successfully loaded cookies from local cookies.json");
+        } catch (e) {
+            console.log("Failed to parse local cookies.json, fallback to env variables.");
+        }
+    }
+
+    // 如果本地没有或读取失败，则使用环境变量（Secrets）
+    if (!xsrfValue || !sessionValue) {
+        if (!COOKIE_XSRF || !COOKIE_SESSION) {
+            console.error("Missing cookies in environment variables!");
+            await sendTelegramNotification("❌ Cookie setup is incomplete or missing in GitHub Secrets.");
+            process.exit(1);
+        }
+        xsrfValue = cleanCookieValue(COOKIE_XSRF, 'XSRF-TOKEN');
+        sessionValue = cleanCookieValue(COOKIE_SESSION, 'pelican_session');
+        console.log("Using initial cookies from environment variables.");
     }
 
     console.log("Initializing puppeteer-real-browser with local SOCKS5 proxy...");
@@ -88,7 +110,7 @@ async function main() {
     try {
         const response = await connect({
             headless: false,
-            turnstile: true, // 开启自动绕过
+            turnstile: true,
             disableXvfb: false,
             connectOption: {
                 defaultViewport: null
@@ -112,9 +134,6 @@ async function main() {
     }
 
     try {
-        const xsrfValue = cleanCookieValue(COOKIE_XSRF, 'XSRF-TOKEN');
-        const sessionValue = cleanCookieValue(COOKIE_SESSION, 'pelican_session');
-
         console.log(`Setting session cookies... (XSRF Length: ${xsrfValue.length}, Session Length: ${sessionValue.length})`);
         
         await page.setCookie({
@@ -139,12 +158,11 @@ async function main() {
         await page.goto(CONSOLE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
         await sleep(5000);
 
-        // 验证状态
         const currentUrl = page.url();
         console.log(`Current page URL: ${currentUrl}`);
 
         if (currentUrl.includes('/auth/login') || currentUrl.includes('/login') || !currentUrl.includes('/server/')) {
-            console.log("Detected redirection to login page or failed to load the server page. Session is expired.");
+            console.log("Detected redirection to login page. Session is expired.");
             await sendTelegramNotification("⚠️ [Gaming4Free] Cookie 已过期或失效！请重新获取并更新您的 GitHub Secrets 配置。");
             await browser.close();
             process.exit(0); 
@@ -152,11 +170,9 @@ async function main() {
 
         console.log("Successfully logged in!");
 
-        // 1. 获取点击前的剩余时间
         const timeBefore = await getRemainingTime(page);
         console.log(`[Timer] Remaining time BEFORE click: ${timeBefore}`);
 
-        // 2. 扫描特定类型的活动元素 (剔除了 div)
         const elements = await page.$$('button, span, a');
         let targetElement = null;
         for (const el of elements) {
@@ -198,7 +214,6 @@ async function main() {
         const targetHtml = await page.evaluate(el => el.outerHTML, targetElement);
         console.log(`[Debug] Matched Target Element HTML: ${targetHtml}`);
 
-        // 3. 智能寻找父级点击对象
         let clickableElement = targetElement;
         const tagName = await page.evaluate(el => el.tagName.toLowerCase(), targetElement);
         if (tagName !== 'button' && tagName !== 'a') {
@@ -217,11 +232,9 @@ async function main() {
         await page.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }), clickableElement);
         await sleep(2000);
 
-        // 🌟 阶段 1 截图：点击之前的初始状态
         await page.screenshot({ path: '1_before_click.png' });
         console.log("Saved screenshot: 1_before_click.png");
 
-        // 4. 执行物理鼠标模拟点击
         const box = await clickableElement.boundingBox();
         if (box) {
             console.log(`[Debug] Bounding box found: x=${box.x}, y=${box.y}, w=${box.width}, h=${box.height}`);
@@ -236,16 +249,14 @@ async function main() {
             await clickableElement.click();
         }
         
-        // 🌟 阶段 2 截图：点击 3 秒后（广告弹窗被唤醒的瞬间）
         await sleep(3000);
         await page.screenshot({ path: '2_after_click.png' });
         console.log("Saved screenshot: 2_after_click.png");
 
-        // 5. 广告弹窗监听与关闭逻辑
+        // 广告弹窗监听与关闭逻辑
         console.log("Detecting ad modal and waiting for rewards...");
         let modalDetected = false;
         
-        // 轮询 10 秒检测页面上是否存在广告倒计时
         for (let i = 0; i < 10; i++) {
             const hasModalText = await page.evaluate(() => {
                 const text = document.body.innerText.toLowerCase();
@@ -263,7 +274,6 @@ async function main() {
             console.log("Waiting for 'Reward Granted' status...");
             let rewardGranted = false;
             
-            // 最多等待 45 秒（对应图 2 中 21 秒的广告时间 + 缓冲）
             for (let i = 0; i < 45; i++) {
                 const isGranted = await page.evaluate(() => {
                     const text = document.body.innerText;
@@ -278,24 +288,20 @@ async function main() {
             }
 
             if (rewardGranted) {
-                await sleep(1500); // 留出一点渲染时间
+                await sleep(1500);
                 
                 console.log("Attempting to close the ad modal...");
                 
-                // A. 优先尝试通过 DOM 寻找关闭按钮并利用 JS 执行点击
                 const closeResult = await page.evaluate(() => {
                     function findCloseElement() {
-                        // 1. 寻找包含 "Reward Granted" 的元素作为锚点
                         const anchor = Array.from(document.querySelectorAll('*')).find(el => {
                             return el.textContent && el.textContent.includes('Reward Granted') && el.offsetWidth > 0;
                         });
                         
                         if (anchor) {
                             let parent = anchor.parentElement;
-                            // 向上查找 5 层以锁定包含 X（关闭）按钮的容器
                             for (let i = 0; i < 5; i++) {
                                 if (!parent) break;
-                                // 在该容器下搜索带有 "close"、"button"、"svg" 或 "role=button" 的关闭元素
                                 const closeBtn = parent.querySelector('[class*="close" i], button, svg, [role="button"]');
                                 if (closeBtn && closeBtn !== anchor) {
                                     return closeBtn;
@@ -304,7 +310,6 @@ async function main() {
                             }
                         }
 
-                        // 2. 备选：寻找常见的有关闭特征的元素
                         const commonSelectors = [
                             '[class*="close" i]',
                             '[id*="close" i]',
@@ -342,7 +347,6 @@ async function main() {
 
                 console.log(`Close button click attempt result: ${JSON.stringify(closeResult)}`);
 
-                // B. 兜底方案：如果 JS 找不到元素，根据图 3 结构（X 在 "Reward Granted" 右侧）采用相对物理坐标进行点击
                 if (!closeResult.success) {
                     console.log("JS click fallback triggered: Trying physical coordinate click relative to anchor...");
                     const anchorBox = await page.evaluate(() => {
@@ -357,19 +361,17 @@ async function main() {
                     });
 
                     if (anchorBox) {
-                        // 物理偏移量：在 "Reward Granted" 药丸框右边缘往右偏移约 45~50 像素处
                         const targetX = anchorBox.x + anchorBox.w + 45;
                         const targetY = anchorBox.y + anchorBox.h / 2;
                         console.log(`Clicking coordinate offset: x=${targetX}, y=${targetY}`);
                         await page.mouse.click(targetX, targetY);
                     } else {
-                        // 如果连 anchor 都找不到，尝试在屏幕上方/中间区域常规定位点盲击
                         console.log("No anchor box found, trying default coordinate click...");
                         await page.mouse.click(740, 290); 
                     }
                 }
                 
-                await sleep(5000); // 留 5 秒时间让模态框淡出，以便页面时间完成数据刷新
+                await sleep(5000); 
             } else {
                 console.log("Timed out waiting for 'Reward Granted'.");
             }
@@ -378,26 +380,44 @@ async function main() {
             await sleep(20000);
         }
 
-        // 🌟 阶段 3 截图：最终过检及关闭弹窗后的界面状态
         await page.screenshot({ path: '3_final_result.png' });
         console.log("Saved screenshot: 3_final_result.png");
 
-        // 6. 获取点击后的剩余时间并对比
         const timeAfter = await getRemainingTime(page);
         console.log(`[Timer] Remaining time AFTER click: ${timeAfter}`);
 
         const secsBefore = timeStringToSeconds(timeBefore);
         const secsAfter = timeStringToSeconds(timeAfter);
 
+        let executionSuccess = false;
         if (secsBefore > 0 && secsAfter > 0) {
             if (secsAfter > secsBefore + 600) {
                 console.log(`🎉 Success! Time increased from ${timeBefore} to ${timeAfter}.`);
+                executionSuccess = true;
             } else {
                 console.log(`⚠️ Warning: Time did NOT increase. (Before: ${timeBefore} -> After: ${timeAfter}).`);
                 await sendTelegramNotification(`⚠️ [Gaming4Free] 续期未成功：请下载 Action 的 Artifacts 里的 debug-screenshots.zip 解压，核对点击和验证过程。`);
             }
         } else {
             console.log("Failed to parse remaining time. Skipping delta verification.");
+            executionSuccess = true; // 若解析失败但未报错，保留提取 Cookie 的操作
+        }
+
+        // 🌟 核心修改：如果流程通畅，则提取当前最新的 Cookie 并保存到 cookies.json
+        if (executionSuccess) {
+            const currentCookies = await page.cookies();
+            const newXsrf = currentCookies.find(c => c.name === 'XSRF-TOKEN')?.value;
+            const newSession = currentCookies.find(c => c.name === 'pelican_session')?.value;
+
+            if (newXsrf && newSession) {
+                const cookiePayload = {
+                    xsrf: newXsrf,
+                    session: newSession,
+                    updatedAt: new Date().toISOString()
+                };
+                fs.writeFileSync('cookies.json', JSON.stringify(cookiePayload, null, 2));
+                console.log("Saved fresh session cookies back to cookies.json");
+            }
         }
 
     } catch (error) {
