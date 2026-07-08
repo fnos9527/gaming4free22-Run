@@ -14,3 +14,23 @@ TELEGRAM_CHAT_ID（可选）: 您的 Telegram 账号 Chat ID。
 回写仓库（Git Commit）：GitHub Actions 执行成功后，自动将更新后的 cookies.json 提交并推送到您的 GitHub 仓库。下一次执行时，工作流就会自动拉取并使用上一次保存的最新 Cookie。
 
 
+URL：输入下方 API 接口地址（将其中的用户名和项目名换成您自己的）：    
+https://api.github.com/repos/fnos9527/gaming4free22-Run/dispatches 
+
+第一条：   
+Key: Authorization    
+Value: Bearer 替换为您在步骤A中复制的Token (注意 Bearer 和 Token 之间有一个英文空格)   
+第二条：  
+Key: Accept    
+Value: application/vnd.github+json    
+第三条：   
+Key: User-Agent   
+Value: cron-job.org    
+
+Request Body
+```
+{
+  "event_type": "external-trigger"
+}
+```
+
