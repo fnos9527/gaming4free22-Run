@@ -2,17 +2,23 @@ name: Game Container Auto Renewal
 
 on:
   schedule:
-    # 每 6 小时自动运行一次 (可根据需要自行调整)
-    - cron: '0 */1 * * *'
+    # 保持每 1 小时或自定时间检查一次
+    - cron: '0 */12 * * *'
   workflow_dispatch: # 支持手动点击触发
+  repository_dispatch: # 🌟 核心修改：支持外部第三方 Webhook 触发接口
+    types: [external-trigger]
 
 jobs:
   renew:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 🌟 必须：允许工作流更新和推送 cookies.json 回仓库
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true # 保留认证状态以支持推送
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -112,7 +118,21 @@ jobs:
         run: |
           xvfb-run --server-args="-screen 0 1280x1200x24" node renew.js
 
-      # 修改此步骤：打包并上传运行过程中所有的截图（1、2、3）
+      # 🌟 核心修改：检测并向 GitHub 提交更新后的 cookies.json 
+      - name: Push Updated Cookies to Repository
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f cookies.json ]; then
+            git add cookies.json
+            # 如果文件有变化则提交修改，[skip ci] 标记防止在触发推送时二次拉起工作流造成死循环
+            git diff-index --quiet HEAD || git commit -m "chore: auto-update session cookies [skip ci]"
+            git push origin HEAD:${{ github.ref }}
+          else
+            echo "cookies.json does not exist, skipping commit."
+          fi
+
       - name: Upload Debug Screenshots
         if: always()
         uses: actions/upload-artifact@v4
