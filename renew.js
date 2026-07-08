@@ -156,7 +156,7 @@ async function main() {
         const timeBefore = await getRemainingTime(page);
         console.log(`[Timer] Remaining time BEFORE click: ${timeBefore}`);
 
-        // 2. 扫描特定类型的活动元素 (剔除了 div，彻底避开大盒子干扰)
+        // 2. 扫描特定类型的活动元素 (剔除了 div)
         const elements = await page.$$('button, span, a');
         let targetElement = null;
         for (const el of elements) {
@@ -168,7 +168,6 @@ async function main() {
 
             if (isVisible) {
                 const rawText = await page.evaluate(node => node.textContent, el);
-                // 去除多余空格和换行，便于精确对比
                 const text = rawText.replace(/\s+/g, ' ').trim().toLowerCase();
                 
                 if (
@@ -196,11 +195,10 @@ async function main() {
             return;
         }
 
-        // 输出定位到的真实 Target 元素的 HTML，以便调试核对
         const targetHtml = await page.evaluate(el => el.outerHTML, targetElement);
         console.log(`[Debug] Matched Target Element HTML: ${targetHtml}`);
 
-        // 3. 智能寻找父级点击对象：如果是 span 等文本标签，自动提取最近的外层真实 button 或 a 标签
+        // 3. 智能寻找父级点击对象
         let clickableElement = targetElement;
         const tagName = await page.evaluate(el => el.tagName.toLowerCase(), targetElement);
         if (tagName !== 'button' && tagName !== 'a') {
@@ -223,44 +221,164 @@ async function main() {
         await page.screenshot({ path: '1_before_click.png' });
         console.log("Saved screenshot: 1_before_click.png");
 
-        // 4. 执行高保真物理鼠标模拟点击
+        // 4. 执行物理鼠标模拟点击
         const box = await clickableElement.boundingBox();
         if (box) {
             console.log(`[Debug] Bounding box found: x=${box.x}, y=${box.y}, w=${box.width}, h=${box.height}`);
-            console.log("Simulating high-fidelity human mouse trajectory click...");
-            
-            // 物理鼠标平滑移动到按钮正中心
             await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
             await sleep(500);
-            
-            // 物理按下并保持 100ms（代表人类正常按压）
             await page.mouse.down();
             await sleep(100);
             await page.mouse.up();
-            
             console.log("High-fidelity human mouse click complete.");
         } else {
             console.log("[Debug] Bounding box not found, falling back to Puppeteer click.");
             await clickableElement.click();
         }
         
-        // 🌟 阶段 2 截图：点击 3 秒后（验证码弹窗或广告应该被唤醒的瞬间）
+        // 🌟 阶段 2 截图：点击 3 秒后（广告弹窗被唤醒的瞬间）
         await sleep(3000);
         await page.screenshot({ path: '2_after_click.png' });
         console.log("Saved screenshot: 2_after_click.png");
 
-        // 5. 兜底策略：如果物理点击未触发状态改变（时间没变），强制通过内核 JS 的 HTMLElement.click() 触发
-        const timeAfterFirstTry = await getRemainingTime(page);
-        if (timeAfterFirstTry === timeBefore) {
-            console.log("[Warning] Time did not change after physical mouse click. Attempting fallback JS HTMLElement.click()...");
-            await page.evaluate(el => el.click(), clickableElement);
-            await sleep(3000); // 留时间给 JS 触发的弹窗/广告唤醒
+        // 5. 广告弹窗监听与关闭逻辑
+        console.log("Detecting ad modal and waiting for rewards...");
+        let modalDetected = false;
+        
+        // 轮询 10 秒检测页面上是否存在广告倒计时
+        for (let i = 0; i < 10; i++) {
+            const hasModalText = await page.evaluate(() => {
+                const text = document.body.innerText.toLowerCase();
+                return text.includes('reward') || text.includes('seconds until') || text.includes('until reward');
+            });
+            if (hasModalText) {
+                modalDetected = true;
+                console.log("Ad modal detected successfully.");
+                break;
+            }
+            await sleep(1000);
         }
 
-        console.log("Waiting 20 seconds for Turnstile verification to auto-solve...");
-        await sleep(20000);
+        if (modalDetected) {
+            console.log("Waiting for 'Reward Granted' status...");
+            let rewardGranted = false;
+            
+            // 最多等待 45 秒（对应图 2 中 21 秒的广告时间 + 缓冲）
+            for (let i = 0; i < 45; i++) {
+                const isGranted = await page.evaluate(() => {
+                    const text = document.body.innerText;
+                    return text.includes('Reward Granted');
+                });
+                if (isGranted) {
+                    rewardGranted = true;
+                    console.log("✨ 'Reward Granted' detected!");
+                    break;
+                }
+                await sleep(1000);
+            }
 
-        // 🌟 阶段 3 截图：最终过检后的界面状态
+            if (rewardGranted) {
+                await sleep(1500); // 留出一点渲染时间
+                
+                console.log("Attempting to close the ad modal...");
+                
+                // A. 优先尝试通过 DOM 寻找关闭按钮并利用 JS 执行点击
+                const closeResult = await page.evaluate(() => {
+                    function findCloseElement() {
+                        // 1. 寻找包含 "Reward Granted" 的元素作为锚点
+                        const anchor = Array.from(document.querySelectorAll('*')).find(el => {
+                            return el.textContent && el.textContent.includes('Reward Granted') && el.offsetWidth > 0;
+                        });
+                        
+                        if (anchor) {
+                            let parent = anchor.parentElement;
+                            // 向上查找 5 层以锁定包含 X（关闭）按钮的容器
+                            for (let i = 0; i < 5; i++) {
+                                if (!parent) break;
+                                // 在该容器下搜索带有 "close"、"button"、"svg" 或 "role=button" 的关闭元素
+                                const closeBtn = parent.querySelector('[class*="close" i], button, svg, [role="button"]');
+                                if (closeBtn && closeBtn !== anchor) {
+                                    return closeBtn;
+                                }
+                                parent = parent.parentElement;
+                            }
+                        }
+
+                        // 2. 备选：寻找常见的有关闭特征的元素
+                        const commonSelectors = [
+                            '[class*="close" i]',
+                            '[id*="close" i]',
+                            '[aria-label*="close" i]',
+                            'button'
+                        ];
+                        for (const selector of commonSelectors) {
+                            const elements = document.querySelectorAll(selector);
+                            for (const el of elements) {
+                                if (el.offsetWidth > 0 && el.offsetHeight > 0) {
+                                    const text = (el.textContent || '').trim();
+                                    if (text === '×' || text.toLowerCase() === 'x' || el.innerHTML.includes('svg')) {
+                                        return el;
+                                    }
+                                }
+                            }
+                        }
+                        return null;
+                    }
+
+                    const closeEl = findCloseElement();
+                    if (closeEl) {
+                        closeEl.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        if (typeof closeEl.click === 'function') {
+                            closeEl.click();
+                            return { success: true, method: 'element.click()' };
+                        } else {
+                            const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+                            closeEl.dispatchEvent(ev);
+                            return { success: true, method: 'dispatchEvent' };
+                        }
+                    }
+                    return { success: false };
+                });
+
+                console.log(`Close button click attempt result: ${JSON.stringify(closeResult)}`);
+
+                // B. 兜底方案：如果 JS 找不到元素，根据图 3 结构（X 在 "Reward Granted" 右侧）采用相对物理坐标进行点击
+                if (!closeResult.success) {
+                    console.log("JS click fallback triggered: Trying physical coordinate click relative to anchor...");
+                    const anchorBox = await page.evaluate(() => {
+                        const anchor = Array.from(document.querySelectorAll('*')).find(el => {
+                            return el.textContent && el.textContent.includes('Reward Granted') && el.offsetWidth > 0;
+                        });
+                        if (anchor) {
+                            const rect = anchor.getBoundingClientRect();
+                            return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+                        }
+                        return null;
+                    });
+
+                    if (anchorBox) {
+                        // 物理偏移量：在 "Reward Granted" 药丸框右边缘往右偏移约 45~50 像素处
+                        const targetX = anchorBox.x + anchorBox.w + 45;
+                        const targetY = anchorBox.y + anchorBox.h / 2;
+                        console.log(`Clicking coordinate offset: x=${targetX}, y=${targetY}`);
+                        await page.mouse.click(targetX, targetY);
+                    } else {
+                        // 如果连 anchor 都找不到，尝试在屏幕上方/中间区域常规定位点盲击
+                        console.log("No anchor box found, trying default coordinate click...");
+                        await page.mouse.click(740, 290); 
+                    }
+                }
+                
+                await sleep(5000); // 留 5 秒时间让模态框淡出，以便页面时间完成数据刷新
+            } else {
+                console.log("Timed out waiting for 'Reward Granted'.");
+            }
+        } else {
+            console.log("No ad modal detected. Falling back to default Turnstile wait.");
+            await sleep(20000);
+        }
+
+        // 🌟 阶段 3 截图：最终过检及关闭弹窗后的界面状态
         await page.screenshot({ path: '3_final_result.png' });
         console.log("Saved screenshot: 3_final_result.png");
 
