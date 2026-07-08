@@ -308,14 +308,37 @@ async function main() {
                 
                 console.log("Attempting to close the ad modal...");
                 
+                // [优化 A] 精准定位关闭按钮，剔除视频内部控制元素的影响
                 const closeResult = await page.evaluate(() => {
                     function findCloseElement() {
-                        const anchor = Array.from(document.querySelectorAll('*')).find(el => {
-                            return el.textContent && el.textContent.includes('Reward Granted') && el.offsetWidth > 0;
+                        // 1. 寻找靠近屏幕水平中心（x = 640px）且可见的 "Reward Granted" 元素作为主弹窗锚点
+                        const anchors = Array.from(document.querySelectorAll('*')).filter(el => {
+                            if (!el.textContent || !el.textContent.includes('Reward Granted')) return false;
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width === 0 || rect.height === 0) return false;
+                            // 确保在 1280x1200 可见视口内
+                            if (rect.left < 0 || rect.top < 0 || rect.right > 1280 || rect.bottom > 1200) return false;
+                            return true;
                         });
+                        
+                        if (anchors.length === 0) return null;
+                        
+                        // 过滤出距离屏幕中心 X 轴（640px）最近的那个主弹窗（排除右下角挂载广告）
+                        let anchor = anchors[0];
+                        let minDistance = Infinity;
+                        for (const a of anchors) {
+                            const rect = a.getBoundingClientRect();
+                            const centerX = rect.left + rect.width / 2;
+                            const dist = Math.abs(centerX - 640);
+                            if (dist < minDistance) {
+                                minDistance = dist;
+                                anchor = a;
+                            }
+                        }
                         
                         if (anchor) {
                             let parent = anchor.parentElement;
+                            // 往上找 4 层寻找包含整个顶部 Header 控制条的节点
                             for (let i = 0; i < 4; i++) {
                                 if (!parent) break;
                                 
@@ -332,6 +355,7 @@ async function main() {
                             }
                         }
 
+                        // 2. 备选方案：全局查找带有 "close" 属性或 "X" 文字的显式按钮
                         const commonSelectors = ['[class*="close" i]', '[aria-label*="close" i]', 'button'];
                         for (const selector of commonSelectors) {
                             const elements = document.querySelectorAll(selector);
@@ -375,9 +399,29 @@ async function main() {
                 if (isModalStillOpen) {
                     console.log("[Warning] Modal is still open after first click attempt. Executing coordinate fallback...");
                     const anchorBox = await page.evaluate(() => {
-                        const anchor = Array.from(document.querySelectorAll('*')).find(el => {
-                            return el.textContent && el.textContent.includes('Reward Granted') && el.offsetWidth > 0;
+                        // 坐标定位时，同样采用“最靠近屏幕水平中心(640)”的锚点定位算法
+                        const anchors = Array.from(document.querySelectorAll('*')).filter(el => {
+                            if (!el.textContent || !el.textContent.includes('Reward Granted')) return false;
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width === 0 || rect.height === 0) return false;
+                            if (rect.left < 0 || rect.top < 0 || rect.right > 1280 || rect.bottom > 1200) return false;
+                            return true;
                         });
+                        
+                        if (anchors.length === 0) return null;
+                        
+                        let anchor = anchors[0];
+                        let minDistance = Infinity;
+                        for (const a of anchors) {
+                            const rect = a.getBoundingClientRect();
+                            const centerX = rect.left + rect.width / 2;
+                            const dist = Math.abs(centerX - 640);
+                            if (dist < minDistance) {
+                                minDistance = dist;
+                                anchor = a;
+                            }
+                        }
+
                         if (anchor) {
                             const rect = anchor.getBoundingClientRect();
                             return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
@@ -386,6 +430,7 @@ async function main() {
                     });
 
                     if (anchorBox) {
+                        // 在屏幕居中主弹窗的 "Reward Granted" 蓝色药丸右边缘往右偏移 48 像素
                         const targetX = anchorBox.x + anchorBox.w + 48;
                         const targetY = anchorBox.y + anchorBox.h / 2;
                         console.log(`Clicking physical coordinate fallback: x=${targetX}, y=${targetY}`);
@@ -412,6 +457,7 @@ async function main() {
         await page.screenshot({ path: '3_final_result.png' });
         console.log("Saved screenshot: 3_final_result.png");
 
+        // 6. 获取点击后的剩余时间并对比
         const timeAfter = await getRemainingTime(page);
         console.log(`[Timer] Remaining time AFTER click: ${timeAfter}`);
 
