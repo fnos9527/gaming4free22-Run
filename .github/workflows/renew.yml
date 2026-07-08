@@ -1,9 +1,7 @@
 name: Game Container Auto Renewal
 
 on:
-  schedule:
     # 保持每 1 小时或自定时间检查一次
-    - cron: '0 */12 * * *'
   workflow_dispatch: # 支持手动点击触发
   repository_dispatch: # 🌟 核心修改：支持外部第三方 Webhook 触发接口
     types: [external-trigger]
