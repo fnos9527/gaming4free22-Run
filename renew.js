@@ -92,9 +92,53 @@ async function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// 封装设置 Cookie 并导航验证的函数
+async function setupCookiesAndNavigate(page, xsrf, session) {
+    try {
+        // 清理旧 Cookie，防止干扰
+        const client = await page.target().createCDPSession();
+        await client.send('Network.clearBrowserCookies');
+    } catch (e) {
+        console.log("Failed to clear browser cookies:", e.message);
+    }
+
+    console.log(`Setting session cookies... (XSRF Length: ${xsrf.length}, Session Length: ${session.length})`);
+    
+    await page.setCookie({
+        name: 'XSRF-TOKEN',
+        value: xsrf,
+        domain: 'control.gaming4free.net',
+        path: '/',
+        secure: true,
+        httpOnly: false
+    });
+
+    await page.setCookie({
+        name: 'pelican_session',
+        value: session,
+        domain: 'control.gaming4free.net',
+        path: '/',
+        secure: true,
+        httpOnly: true
+    });
+
+    console.log(`Navigating to console URL: ${CONSOLE_URL}`);
+    await page.goto(CONSOLE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    await sleep(5000);
+
+    const currentUrl = page.url();
+    console.log(`Current page URL: ${currentUrl}`);
+
+    if (currentUrl.includes('/auth/login') || currentUrl.includes('/login') || !currentUrl.includes('/server/')) {
+        return false;
+    }
+    return true;
+}
+
 async function main() {
     let xsrfValue = '';
     let sessionValue = '';
+    let cookiesSource = '';
 
     // 优先从本地 cookies.json 加载
     if (fs.existsSync('cookies.json')) {
@@ -102,6 +146,7 @@ async function main() {
             const saved = JSON.parse(fs.readFileSync('cookies.json', 'utf-8'));
             xsrfValue = saved.xsrf;
             sessionValue = saved.session;
+            cookiesSource = 'cookies.json';
             console.log("Successfully loaded cookies from local cookies.json");
         } catch (e) {
             console.log("Failed to parse local cookies.json, fallback to env variables.");
@@ -110,14 +155,16 @@ async function main() {
 
     // 如果本地没有或读取失败，则使用环境变量（Secrets）
     if (!xsrfValue || !sessionValue) {
-        if (!COOKIE_XSRF || !COOKIE_SESSION) {
-            console.error("Missing cookies in environment variables!");
-            await sendTelegramNotification("❌ Cookie setup is incomplete or missing in GitHub Secrets.");
-            process.exit(1);
-        }
         xsrfValue = cleanCookieValue(COOKIE_XSRF, 'XSRF-TOKEN');
         sessionValue = cleanCookieValue(COOKIE_SESSION, 'pelican_session');
+        cookiesSource = 'environment variables';
         console.log("Using initial cookies from environment variables.");
+    }
+
+    if (!xsrfValue || !sessionValue) {
+        console.error("Missing cookies in both cookies.json and environment variables!");
+        await sendTelegramNotification("❌ Cookie setup is incomplete or missing.");
+        process.exit(1);
     }
 
     console.log("Initializing puppeteer-real-browser with local SOCKS5 proxy...");
@@ -150,38 +197,35 @@ async function main() {
     }
 
     try {
-        console.log(`Setting session cookies... (XSRF Length: ${xsrfValue.length}, Session Length: ${sessionValue.length})`);
-        
-        await page.setCookie({
-            name: 'XSRF-TOKEN',
-            value: xsrfValue,
-            domain: 'control.gaming4free.net',
-            path: '/',
-            secure: true,
-            httpOnly: false
-        });
+        // 第一轮尝试登录
+        let loginSuccess = await setupCookiesAndNavigate(page, xsrfValue, sessionValue);
 
-        await page.setCookie({
-            name: 'pelican_session',
-            value: sessionValue,
-            domain: 'control.gaming4free.net',
-            path: '/',
-            secure: true,
-            httpOnly: true
-        });
+        // 如果第一轮失败，且刚才使用的是本地 cookies.json，则自动降级使用环境变量里的 Cookie 重试一次
+        if (!loginSuccess && cookiesSource === 'cookies.json') {
+            console.log("Session from cookies.json expired. Attempting fallback to environment variables (Secrets)...");
+            const envXsrf = cleanCookieValue(COOKIE_XSRF, 'XSRF-TOKEN');
+            const envSession = cleanCookieValue(COOKIE_SESSION, 'pelican_session');
 
-        console.log(`Navigating to console URL: ${CONSOLE_URL}`);
-        await page.goto(CONSOLE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-        await sleep(5000);
+            if (envXsrf && envSession && (envXsrf !== xsrfValue || envSession !== sessionValue)) {
+                loginSuccess = await setupCookiesAndNavigate(page, envXsrf, envSession);
+                if (loginSuccess) {
+                    console.log("Successfully logged in using environment variables!");
+                }
+            } else {
+                console.log("Environment variables are identical to cookies.json or empty. Cannot fall back.");
+            }
+        }
 
-        const currentUrl = page.url();
-        console.log(`Current page URL: ${currentUrl}`);
-
-        if (currentUrl.includes('/auth/login') || currentUrl.includes('/login') || !currentUrl.includes('/server/')) {
+        // 如果最终依然重定向到登录页面
+        if (!loginSuccess) {
             console.log("Detected redirection to login page. Session is expired.");
+            // 保存登录失败时的截图
+            await page.screenshot({ path: '0_login_error.png' });
+            console.log("Saved login error screenshot: 0_login_error.png");
+
             await sendTelegramNotification("⚠️ [Gaming4Free] Cookie 已过期或失效！请重新获取并更新您的 GitHub Secrets 配置。");
             await browser.close();
-            process.exit(0); 
+            process.exit(1); // 异常退出，以便触发 GitHub Action 的失败并上传截图
         }
 
         console.log("Successfully logged in!");
@@ -308,22 +352,18 @@ async function main() {
                 
                 console.log("Attempting to close the ad modal...");
                 
-                // [优化 A] 精准定位关闭按钮，剔除视频内部控制元素的影响
                 const closeResult = await page.evaluate(() => {
                     function findCloseElement() {
-                        // 1. 寻找靠近屏幕水平中心（x = 640px）且可见的 "Reward Granted" 元素作为主弹窗锚点
                         const anchors = Array.from(document.querySelectorAll('*')).filter(el => {
                             if (!el.textContent || !el.textContent.includes('Reward Granted')) return false;
                             const rect = el.getBoundingClientRect();
                             if (rect.width === 0 || rect.height === 0) return false;
-                            // 确保在 1280x1200 可见视口内
                             if (rect.left < 0 || rect.top < 0 || rect.right > 1280 || rect.bottom > 1200) return false;
                             return true;
                         });
                         
                         if (anchors.length === 0) return null;
                         
-                        // 过滤出距离屏幕中心 X 轴（640px）最近的那个主弹窗（排除右下角挂载广告）
                         let anchor = anchors[0];
                         let minDistance = Infinity;
                         for (const a of anchors) {
@@ -338,7 +378,6 @@ async function main() {
                         
                         if (anchor) {
                             let parent = anchor.parentElement;
-                            // 往上找 4 层寻找包含整个顶部 Header 控制条的节点
                             for (let i = 0; i < 4; i++) {
                                 if (!parent) break;
                                 
@@ -355,7 +394,6 @@ async function main() {
                             }
                         }
 
-                        // 2. 备选方案：全局查找带有 "close" 属性或 "X" 文字的显式按钮
                         const commonSelectors = ['[class*="close" i]', '[aria-label*="close" i]', 'button'];
                         for (const selector of commonSelectors) {
                             const elements = document.querySelectorAll(selector);
@@ -399,7 +437,6 @@ async function main() {
                 if (isModalStillOpen) {
                     console.log("[Warning] Modal is still open after first click attempt. Executing coordinate fallback...");
                     const anchorBox = await page.evaluate(() => {
-                        // 坐标定位时，同样采用“最靠近屏幕水平中心(640)”的锚点定位算法
                         const anchors = Array.from(document.querySelectorAll('*')).filter(el => {
                             if (!el.textContent || !el.textContent.includes('Reward Granted')) return false;
                             const rect = el.getBoundingClientRect();
@@ -430,7 +467,6 @@ async function main() {
                     });
 
                     if (anchorBox) {
-                        // 在屏幕居中主弹窗的 "Reward Granted" 蓝色药丸右边缘往右偏移 48 像素
                         const targetX = anchorBox.x + anchorBox.w + 48;
                         const targetY = anchorBox.y + anchorBox.h / 2;
                         console.log(`Clicking physical coordinate fallback: x=${targetX}, y=${targetY}`);
