@@ -174,13 +174,15 @@ async function main() {
         const response = await connect({
             headless: false,
             turnstile: true,
-            disableXvfb: false,
+            disableXvfb: true, // 🌟 避免与外层工作流的 xvfb-run 冲突
             connectOption: {
                 defaultViewport: null
             },
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage', // 🌟 解决 Docker 容器共享内存不足导致浏览器崩溃的问题
+                '--disable-gpu',           // 🌟 禁用 GPU 硬件加速以在无显卡环境稳定运行
                 '--proxy-server=socks5://127.0.0.1:10808',
                 '--window-size=1280,1200'
             ]
@@ -219,7 +221,7 @@ async function main() {
         // 如果最终依然重定向到登录页面
         if (!loginSuccess) {
             console.log("Detected redirection to login page. Session is expired.");
-            // 保存登录失败时的截图
+            // 保存登录失败时的截图供排查
             await page.screenshot({ path: '0_login_error.png' });
             console.log("Saved login error screenshot: 0_login_error.png");
 
