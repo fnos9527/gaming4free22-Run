@@ -92,6 +92,65 @@ async function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// 🌟 新增：自动检测并关闭 GDPR 隐私授权弹窗的函数
+async function handleConsentPopup(page) {
+    console.log("Checking for GDPR consent modal...");
+    try {
+        // 首先尝试在主文档中寻找 Consent 按钮
+        let clicked = await page.evaluate(() => {
+            const findAndClick = (doc) => {
+                const buttons = Array.from(doc.querySelectorAll('button, span, a'));
+                const btn = buttons.find(el => {
+                    const text = (el.textContent || '').trim().toLowerCase();
+                    return text === 'consent' || text === 'accept' || text === 'agree';
+                });
+                if (btn) {
+                    btn.click();
+                    return true;
+                }
+                return false;
+            };
+            return findAndClick(document);
+        });
+
+        // 如果主文档中未找到，尝试遍历可能包含弹窗的 iframe
+        if (!clicked) {
+            const frames = page.frames();
+            for (const frame of frames) {
+                try {
+                    clicked = await frame.evaluate(() => {
+                        const buttons = Array.from(document.querySelectorAll('button, span, a'));
+                        const btn = buttons.find(el => {
+                            const text = (el.textContent || '').trim().toLowerCase();
+                            return text === 'consent' || text === 'accept' || text === 'agree';
+                        });
+                        if (btn) {
+                            btn.click();
+                            return true;
+                        }
+                        return false;
+                    });
+                    if (clicked) {
+                        console.log("Accepted consent popup inside an iframe.");
+                        break;
+                    }
+                } catch (frameErr) {
+                    // 忽略跨域 iframe 带来的安全报错
+                }
+            }
+        }
+
+        if (clicked) {
+            console.log("Consent button clicked successfully. Waiting for overlay to fade out...");
+            await sleep(4000); // 等待遮罩动画消失
+        } else {
+            console.log("No consent popup matched.");
+        }
+    } catch (e) {
+        console.log("Error handling consent popup:", e.message);
+    }
+}
+
 // 封装设置 Cookie 并导航验证的函数
 async function setupCookiesAndNavigate(page, xsrf, session) {
     try {
@@ -125,6 +184,9 @@ async function setupCookiesAndNavigate(page, xsrf, session) {
     console.log(`Navigating to console URL: ${CONSOLE_URL}`);
     await page.goto(CONSOLE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
     await sleep(5000);
+
+    // 🌟 在这里调用：页面加载完成后立即尝试清理可能出现的隐私授权弹窗
+    await handleConsentPopup(page);
 
     const currentUrl = page.url();
     console.log(`Current page URL: ${currentUrl}`);
@@ -174,17 +236,17 @@ async function main() {
         const response = await connect({
             headless: false,
             turnstile: true,
-            disableXvfb: true, // 🌟 避免与外层工作流的 xvfb-run 冲突
+            disableXvfb: true, // 避免与外层工作流的 xvfb-run 冲突
             connectOption: {
                 defaultViewport: null,
-                executablePath: '/usr/bin/google-chrome', // 🌟 新增：指向 Ubuntu 预装的 Chrome 路径
-                dumpio: true                               // 🌟 新增：将浏览器日志输出到终端，便于监控和排错
+                executablePath: '/usr/bin/google-chrome',
+                dumpio: true
             },
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // 🌟 解决 Docker 容器共享内存不足导致浏览器崩溃的问题
-                '--disable-gpu',           // 🌟 禁用 GPU 硬件加速以在无显卡环境稳定运行
+                '--disable-dev-shm-usage', // 解决 Docker 容器共享内存不足导致浏览器崩溃的问题
+                '--disable-gpu',           // 禁用 GPU 硬件加速以在无显卡环境稳定运行
                 '--proxy-server=socks5://127.0.0.1:10808',
                 '--window-size=1280,1200'
             ]
