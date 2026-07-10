@@ -1,7 +1,7 @@
 name: Game Container Auto Renewal
 
 on:
-    # 保持每 1 小时或自定时间检查一次
+  # 保持每 1 小时或自定时间检查一次
   workflow_dispatch: # 支持手动点击触发
   repository_dispatch: # 🌟 核心修改：支持外部第三方 Webhook 触发接口
     types: [external-trigger]
@@ -26,7 +26,14 @@ jobs:
       - name: Install System Dependencies for Puppeteer and Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libgbm-dev udev unzip netcat-openbsd
+          sudo apt-get install -y xvfb libgbm-dev udev unzip netcat-openbsd \
+            libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 \
+            libexpat1 libfontconfig1 libgcc1 libgconf-2-4 libgdk-pixbuf2.0-0 \
+            libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libpangocairo-1.0-0 \
+            libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 \
+            libxcursor1 libxdamage1 libext6 libxfixes3 libxi6 libxrandr2 \
+            libxrender1 libxss1 libxtst6 ca-certificates fonts-liberation \
+            libappindicator1 libnss3 lsb-release xdg-utils wget
 
       - name: Create package.json and Install Dependencies
         run: |
