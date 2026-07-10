@@ -176,7 +176,9 @@ async function main() {
             turnstile: true,
             disableXvfb: true, // 🌟 避免与外层工作流的 xvfb-run 冲突
             connectOption: {
-                defaultViewport: null
+                defaultViewport: null,
+                executablePath: '/usr/bin/google-chrome', // 🌟 新增：指向 Ubuntu 预装的 Chrome 路径
+                dumpio: true                               // 🌟 新增：将浏览器日志输出到终端，便于监控和排错
             },
             args: [
                 '--no-sandbox',
