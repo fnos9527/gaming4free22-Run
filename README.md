@@ -1,11 +1,11 @@
 # gaming4free22-Run
 
-VLESS_LINK: 您的完整 vless:// 链接（支持 TLS + WS 形式）。           
-CONSOLE_URL: 您的服务器控制台页面 URL（例如：https://control.gaming4free.net/server/xxxxxxx/console）。            
-COOKIE_XSRF: 您的 XSRF-TOKEN 的 Cookie 原始字符串值[1]。          
-COOKIE_SESSION: 您的 pelican_session 的 Cookie 原始字符串值[1]。           
-TELEGRAM_BOT_TOKEN（可选）: 用于向您推送 cookie 失效通知的 Telegram Bot Token。         
-TELEGRAM_CHAT_ID（可选）: 您的 Telegram 账号 Chat ID。     
+VLESS_LINK             
+CONSOLE_URL（例如：https://control.gaming4free.net/server/xxxxxxx/console）。             
+COOKIE_XSRF          
+COOKIE_SESSION          
+TELEGRAM_BOT_TOKEN（可选）        
+TELEGRAM_CHAT_ID（可选） 
 
 为了解决 Cookie 频繁过期需要手动更新的痛点，我们可以通过以下思路来实现 Cookie 自动持久化和更新：
 
@@ -16,14 +16,13 @@ TELEGRAM_CHAT_ID（可选）: 您的 Telegram 账号 Chat ID。
 
 URL：输入下方 API 接口地址（将其中的用户名和项目名换成您自己的）：    
 https://api.github.com/repos/fnos9527/gaming4free22-Run/dispatches 
-
-第一条：   
+   
 Key: Authorization    
-Value: Bearer 替换为您在步骤A中复制的Token (注意 Bearer 和 Token 之间有一个英文空格)   
-第二条：  
+Value: Bearer 替换Token
+
 Key: Accept    
 Value: application/vnd.github+json    
-第三条：   
+  
 Key: User-Agent   
 Value: cron-job.org    
 
