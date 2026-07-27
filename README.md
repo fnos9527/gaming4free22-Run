@@ -2,8 +2,7 @@
 
 VLESS_LINK             
 CONSOLE_URL（例如：https://control.gaming4free.net/server/xxxxxxx/console）。             
-COOKIE_XSRF          
-COOKIE_SESSION          
+COOKIE_FULL               
 TELEGRAM_BOT_TOKEN（可选）        
 TELEGRAM_CHAT_ID（可选） 
 
