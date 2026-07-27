@@ -110,8 +110,7 @@ jobs:
       - name: Run Renewal Script via Xvfb
         env:
           CONSOLE_URL: ${{ secrets.CONSOLE_URL }}
-          COOKIE_XSRF: ${{ secrets.COOKIE_XSRF }}
-          COOKIE_SESSION: ${{ secrets.COOKIE_SESSION }}
+          COOKIE_FULL: ${{ secrets.COOKIE_FULL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
