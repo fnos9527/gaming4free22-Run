@@ -19,34 +19,28 @@ const axios = require('axios');
 const fs = require('fs');
 
 const CONSOLE_URL = process.env.CONSOLE_URL || 'https://control.gaming4free.net/server/ad2c636e/console';
-const COOKIE_XSRF = process.env.COOKIE_XSRF;
-const COOKIE_SESSION = process.env.COOKIE_SESSION;
+const COOKIE_FULL = process.env.COOKIE_FULL; // 🌟 改动点：现在只用一条完整 Cookie 字符串
 
-// 提取纯净 Cookie 的安全清洗函数
-function cleanCookieValue(rawInput, cookieName) {
-    if (!rawInput) return '';
+// 🌟 改动点：把浏览器里复制出来的完整 Cookie 字符串解析成 [{name, value}, ...] 数组
+function parseCookieString(rawInput) {
+    if (!rawInput) return [];
     let cleaned = rawInput.trim();
-    if (cleaned.toLowerCase().startsWith('set-cookie:')) {
-        cleaned = cleaned.substring(11).trim();
+    if (cleaned.toLowerCase().startsWith('cookie:')) {
+        cleaned = cleaned.substring(7).trim();
     }
-    if (cleaned.includes('=')) {
-        const parts = cleaned.split(';');
-        for (let part of parts) {
-            part = part.trim();
-            if (part.startsWith(cookieName + '=')) {
-                return part.substring(cookieName.length + 1);
-            }
-        }
-        const eqIndex = cleaned.indexOf('=');
-        const key = cleaned.substring(0, eqIndex).trim();
-        if (key.toLowerCase() === cookieName.toLowerCase()) {
-            return cleaned.substring(eqIndex + 1).trim();
-        }
-    }
-    if (cleaned.endsWith(';')) {
-        cleaned = cleaned.slice(0, -1);
-    }
-    return cleaned;
+    return cleaned
+        .split(';')
+        .map(pair => pair.trim())
+        .filter(Boolean)
+        .map(pair => {
+            const eqIndex = pair.indexOf('=');
+            if (eqIndex === -1) return null;
+            const name = pair.substring(0, eqIndex).trim();
+            const value = pair.substring(eqIndex + 1).trim();
+            if (!name) return null;
+            return { name, value };
+        })
+        .filter(Boolean);
 }
 
 // 提取页面上的“剩余时间”数据
@@ -151,8 +145,8 @@ async function handleConsentPopup(page) {
     }
 }
 
-// 封装设置 Cookie 并导航验证的函数
-async function setupCookiesAndNavigate(page, xsrf, session) {
+// 🌟 改动点：封装设置 Cookie 并导航验证的函数，现在接收一整条 Cookie 字符串
+async function setupCookiesAndNavigate(page, cookieString) {
     try {
         // 清理旧 Cookie，防止干扰
         const client = await page.target().createCDPSession();
@@ -161,25 +155,23 @@ async function setupCookiesAndNavigate(page, xsrf, session) {
         console.log("Failed to clear browser cookies:", e.message);
     }
 
-    console.log(`Setting session cookies... (XSRF Length: ${xsrf.length}, Session Length: ${session.length})`);
-    
-    await page.setCookie({
-        name: 'XSRF-TOKEN',
-        value: xsrf,
-        domain: 'control.gaming4free.net',
-        path: '/',
-        secure: true,
-        httpOnly: false
-    });
+    const cookiePairs = parseCookieString(cookieString);
+    console.log(`Setting ${cookiePairs.length} cookies parsed from the full cookie string...`);
 
-    await page.setCookie({
-        name: 'pelican_session',
-        value: session,
-        domain: 'control.gaming4free.net',
-        path: '/',
-        secure: true,
-        httpOnly: true
-    });
+    for (const c of cookiePairs) {
+        try {
+            await page.setCookie({
+                name: c.name,
+                value: c.value,
+                domain: 'control.gaming4free.net',
+                path: '/',
+                secure: true,
+                httpOnly: false
+            });
+        } catch (e) {
+            console.log(`Failed to set cookie "${c.name}":`, e.message);
+        }
+    }
 
     console.log(`Navigating to console URL: ${CONSOLE_URL}`);
     await page.goto(CONSOLE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
@@ -198,39 +190,36 @@ async function setupCookiesAndNavigate(page, xsrf, session) {
 }
 
 async function main() {
-    let xsrfValue = '';
-    let sessionValue = '';
+    let cookieValue = '';
     let cookiesSource = '';
 
     // 优先从本地 cookies.json 加载
     if (fs.existsSync('cookies.json')) {
         try {
             const saved = JSON.parse(fs.readFileSync('cookies.json', 'utf-8'));
-            xsrfValue = saved.xsrf;
-            sessionValue = saved.session;
+            cookieValue = saved.cookie; // 🌟 改动点：cookies.json 现在只存一个完整 cookie 字符串字段
             cookiesSource = 'cookies.json';
-            console.log("Successfully loaded cookies from local cookies.json");
+            console.log("Successfully loaded cookie string from local cookies.json");
         } catch (e) {
             console.log("Failed to parse local cookies.json, fallback to env variables.");
         }
     }
 
     // 如果本地没有或读取失败，则使用环境变量（Secrets）
-    if (!xsrfValue || !sessionValue) {
-        xsrfValue = cleanCookieValue(COOKIE_XSRF, 'XSRF-TOKEN');
-        sessionValue = cleanCookieValue(COOKIE_SESSION, 'pelican_session');
+    if (!cookieValue) {
+        cookieValue = COOKIE_FULL;
         cookiesSource = 'environment variables';
-        console.log("Using initial cookies from environment variables.");
+        console.log("Using initial cookie string from environment variables.");
     }
 
-    if (!xsrfValue || !sessionValue) {
-        console.error("Missing cookies in both cookies.json and environment variables!");
+    if (!cookieValue) {
+        console.error("Missing cookie string in both cookies.json and environment variables!");
         await sendTelegramNotification("❌ Cookie setup is incomplete or missing.");
         process.exit(1);
     }
 
     console.log("Initializing puppeteer-real-browser with local SOCKS5 proxy...");
-    
+
     let browser, page;
     try {
         const response = await connect({
@@ -264,21 +253,21 @@ async function main() {
 
     try {
         // 第一轮尝试登录
-        let loginSuccess = await setupCookiesAndNavigate(page, xsrfValue, sessionValue);
+        let loginSuccess = await setupCookiesAndNavigate(page, cookieValue);
 
         // 如果第一轮失败，且刚才使用的是本地 cookies.json，则自动降级使用环境变量里的 Cookie 重试一次
         if (!loginSuccess && cookiesSource === 'cookies.json') {
             console.log("Session from cookies.json expired. Attempting fallback to environment variables (Secrets)...");
-            const envXsrf = cleanCookieValue(COOKIE_XSRF, 'XSRF-TOKEN');
-            const envSession = cleanCookieValue(COOKIE_SESSION, 'pelican_session');
+            const envCookie = COOKIE_FULL;
 
-            if (envXsrf && envSession && (envXsrf !== xsrfValue || envSession !== sessionValue)) {
-                loginSuccess = await setupCookiesAndNavigate(page, envXsrf, envSession);
+            if (envCookie && envCookie !== cookieValue) {
+                loginSuccess = await setupCookiesAndNavigate(page, envCookie);
                 if (loginSuccess) {
                     console.log("Successfully logged in using environment variables!");
+                    cookieValue = envCookie;
                 }
             } else {
-                console.log("Environment variables are identical to cookies.json or empty. Cannot fall back.");
+                console.log("Environment variable is identical to cookies.json or empty. Cannot fall back.");
             }
         }
 
@@ -311,11 +300,11 @@ async function main() {
             if (isVisible) {
                 const rawText = await page.evaluate(node => node.textContent, el);
                 const text = rawText.replace(/\s+/g, ' ').trim().toLowerCase();
-                
+
                 if (
-                    text.includes('+ 90 min') || 
-                    text.includes('+90 min') || 
-                    text.includes('watch ad') || 
+                    text.includes('+ 90 min') ||
+                    text.includes('+90 min') ||
+                    text.includes('watch ad') ||
                     text.includes('+ top up 100h')
                 ) {
                     targetElement = el;
@@ -374,7 +363,7 @@ async function main() {
             console.log("[Debug] Bounding box not found, falling back to Puppeteer click.");
             await clickableElement.click();
         }
-        
+
         await sleep(3000);
         await page.screenshot({ path: '2_after_click.png' });
         console.log("Saved screenshot: 2_after_click.png");
@@ -382,7 +371,7 @@ async function main() {
         // 5. 广告弹窗监听与关闭逻辑
         console.log("Detecting ad modal and waiting for rewards...");
         let modalDetected = false;
-        
+
         for (let i = 0; i < 10; i++) {
             const hasModalText = await page.evaluate(() => {
                 const text = document.body.innerText.toLowerCase();
@@ -399,7 +388,7 @@ async function main() {
         if (modalDetected) {
             console.log("Waiting for 'Reward Granted' status...");
             let rewardGranted = false;
-            
+
             for (let i = 0; i < 45; i++) {
                 const isGranted = await page.evaluate(() => {
                     const text = document.body.innerText;
@@ -414,10 +403,10 @@ async function main() {
             }
 
             if (rewardGranted) {
-                await sleep(2000); 
-                
+                await sleep(2000);
+
                 console.log("Attempting to close the ad modal...");
-                
+
                 const closeResult = await page.evaluate(() => {
                     function findCloseElement() {
                         const anchors = Array.from(document.querySelectorAll('*')).filter(el => {
@@ -427,9 +416,9 @@ async function main() {
                             if (rect.left < 0 || rect.top < 0 || rect.right > 1280 || rect.bottom > 1200) return false;
                             return true;
                         });
-                        
+
                         if (anchors.length === 0) return null;
-                        
+
                         let anchor = anchors[0];
                         let minDistance = Infinity;
                         for (const a of anchors) {
@@ -441,12 +430,12 @@ async function main() {
                                 anchor = a;
                             }
                         }
-                        
+
                         if (anchor) {
                             let parent = anchor.parentElement;
                             for (let i = 0; i < 4; i++) {
                                 if (!parent) break;
-                                
+
                                 const candidates = parent.querySelectorAll('[class*="close" i], button, svg, [role="button"]');
                                 for (const candidate of candidates) {
                                     if (candidate.closest('.vjs-control-bar, .video-player, [class*="video" i], [class*="player" i]')) {
@@ -465,7 +454,7 @@ async function main() {
                             const elements = document.querySelectorAll(selector);
                             for (const el of elements) {
                                 if (el.closest('.vjs-control-bar, .video-player, [class*="video" i], [class*="player" i]')) {
-                                    continue; 
+                                    continue;
                                 }
                                 if (el.offsetWidth > 0 && el.offsetHeight > 0) {
                                     const text = (el.textContent || '').trim();
@@ -510,9 +499,9 @@ async function main() {
                             if (rect.left < 0 || rect.top < 0 || rect.right > 1280 || rect.bottom > 1200) return false;
                             return true;
                         });
-                        
+
                         if (anchors.length === 0) return null;
-                        
+
                         let anchor = anchors[0];
                         let minDistance = Infinity;
                         for (const a of anchors) {
@@ -546,8 +535,8 @@ async function main() {
                 } else {
                     console.log("Modal closed successfully after first click!");
                 }
-                
-                await sleep(3000); 
+
+                await sleep(3000);
             } else {
                 console.log("Timed out waiting for 'Reward Granted'.");
             }
@@ -577,23 +566,20 @@ async function main() {
             }
         } else {
             console.log("Failed to parse remaining time. Skipping delta verification.");
-            executionSuccess = true; 
+            executionSuccess = true;
         }
 
-        // 保存 Cookie
+        // 🌟 改动点：保存 Cookie —— 把浏览器当前全部 cookie 重新拼接为一整条字符串存回 cookies.json
         if (executionSuccess) {
             const currentCookies = await page.cookies();
-            const newXsrf = currentCookies.find(c => c.name === 'XSRF-TOKEN')?.value;
-            const newSession = currentCookies.find(c => c.name === 'pelican_session')?.value;
-
-            if (newXsrf && newSession) {
+            if (currentCookies && currentCookies.length > 0) {
+                const newCookieString = currentCookies.map(c => `${c.name}=${c.value}`).join('; ');
                 const cookiePayload = {
-                    xsrf: newXsrf,
-                    session: newSession,
+                    cookie: newCookieString,
                     updatedAt: new Date().toISOString()
                 };
                 fs.writeFileSync('cookies.json', JSON.stringify(cookiePayload, null, 2));
-                console.log("Saved fresh session cookies back to cookies.json");
+                console.log("Saved fresh full cookie string back to cookies.json");
             }
         }
 
