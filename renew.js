@@ -174,8 +174,16 @@ async function setupCookiesAndNavigate(page, cookieString) {
     }
 
     console.log(`Navigating to console URL: ${CONSOLE_URL}`);
-    await page.goto(CONSOLE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-    await sleep(5000);
+    // 🌟 改动点：新版完整 Cookie 里带了大量广告/埋点脚本(ga、gads、panoramaId 等)，
+    // 这些脚本会持续在后台发请求，导致 'networkidle2' 永远等不到，从而导致超时崩溃。
+    // 改用更宽松的 'domcontentloaded'，并且把 goto 包进 try/catch，超时也不让脚本崩溃，
+    // 而是继续往下走，靠后面的 URL 判断来确认是否登录成功。
+    try {
+        await page.goto(CONSOLE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    } catch (navError) {
+        console.log(`Navigation warning (continuing anyway): ${navError.message}`);
+    }
+    await sleep(6000);
 
     // 🌟 在这里调用：页面加载完成后立即尝试清理可能出现的隐私授权弹窗
     await handleConsentPopup(page);
